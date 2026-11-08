@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Chipper-8, a dependency free CHIP-8 emulator with four built-in playable ROMs, a live CPU inspector, and a source viewer.">
+  <title>Chipper-8 - CHIP-8 Emulator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <div class="brand-text">
+          <h1>Chipper<span>-8</span></h1>
+          <p>A tiny CHIP-8 interpreter that runs entirely in your browser.</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="ghost-link" href="https://github.com/draarivpatel-ui/chipper-8" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+        <button id="themeToggle" class="icon-btn" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme">
+          <span aria-hidden="true">&#9789;</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- Left column: ROM library + how to play -->
+      <aside class="panel library">
+        <section class="panel-section">
+          <h2 class="section-title">ROM library</h2>
+          <p class="section-hint">Pick a cartridge to load it into the machine.</p>
+          <div id="romList" class="rom-list" role="listbox" aria-label="Built-in ROMs"></div>
+        </section>
+
+        <section class="panel-section">
+          <h2 class="section-title">How to play</h2>
+          <div class="key-legend" id="keyLegend"></div>
+          <div class="keypad" id="keypad" aria-label="CHIP-8 hex keypad"></div>
+          <p class="hint-text" id="romControls"></p>
+          <p class="hint-text subtle">Use your keyboard or tap the keys above. Keys map to the original COSMAC VIP hex pad layout.</p>
+        </section>
+      </aside>
+
+      <!-- Center column: the screen and transport controls -->
+      <section class="panel screen-panel">
+        <div class="screen-toolbar">
+          <div class="status-group">
+            <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+            <span id="statusText" class="status-text">Ready</span>
+          </div>
+          <div class="rom-name" id="activeRomName">No ROM loaded</div>
+        </div>
+
+        <div class="screen-frame">
+          <canvas id="screen" width="640" height="320" role="img" aria-label="CHIP-8 display, 64 by 32 monochrome pixels"></canvas>
+          <div id="screenOverlay" class="screen-overlay">
+            <p>Press play to start</p>
+          </div>
+        </div>
+
+        <div class="transport">
+          <button id="playBtn" class="btn btn-primary" type="button">Play</button>
+          <button id="pauseBtn" class="btn" type="button" disabled>Pause</button>
+          <button id="stepBtn" class="btn" type="button" title="Execute a single opcode">Step</button>
+          <button id="resetBtn" class="btn" type="button">Reset</button>
+        </div>
+
+        <div class="settings">
+          <div class="setting-row">
+            <label for="speedRange" class="setting-label">CPU speed <span id="speedValue" class="setting-value">600 Hz</span></label>
+            <input id="speedRange" class="range" type="range" min="60" max="2000" step="60" value="600">
+          </div>
+          <div class="setting-row toggles">
+            <label class="toggle">
+              <input id="audioToggle" type="checkbox">
+              <span class="toggle-track" aria-hidden="true"></span>
+              <span class="toggle-text">Sound</span>
+              <span class="muted-badge" id="mutedBadge">Muted</span>
+            </label>
+            <label class="toggle">
+              <input id="ghostToggle" type="checkbox">
+              <span class="toggle-track" aria-hidden="true"></span>
+              <span class="toggle-text">Pixel glow</span>
+            </label>
+          </div>
+          <p class="hint-text subtle">Sound is off by default. Flip the toggle to let the sound timer beep through a soft square wave.</p>
+        </div>
+
+        <div class="score-strip">
+          <div class="score-card">
+            <span class="score-label">Score (V7)</span>
+            <span class="score-value" id="scoreValue">0</span>
+          </div>
+          <div class="score-card">
+            <span class="score-label">Opcodes run</span>
+            <span class="score-value" id="opCount">0</span>
+          </div>
+          <div class="score-card">
+            <span class="score-label">Frames drawn</span>
+            <span class="score-value" id="frameCount">0</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right column: live CPU inspector + ROM source -->
+      <aside class="panel inspector">
+        <section class="panel-section">
+          <h2 class="section-title">Machine state</h2>
+          <div class="state-grid" id="stateGrid"></div>
+          <h3 class="sub-title">Registers</h3>
+          <div class="reg-grid" id="regGrid"></div>
+        </section>
+
+        <section class="panel-section source-section">
+          <div class="source-head">
+            <h2 class="section-title">ROM source</h2>
+            <span class="source-tag" id="sourceTag">assembly</span>
+          </div>
+          <pre class="source-code" id="sourceCode"><code>Select a ROM to view its assembly.</code></pre>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span>Built with zero dependencies: <code>engine.js</code>, <code>assembler.js</code>, <code>roms.js</code>.</span>
+      <span>64 &times; 32 display &middot; 4 KB memory &middot; 35 opcodes &middot; 60 Hz timers</span>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Load order matters: the engine and assembler are used by the ROM library and app. -->
+  <script src="engine.js"></script>
+  <script src="assembler.js"></script>
+  <script src="roms.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
