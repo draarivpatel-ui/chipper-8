@@ -1,21 +1,22 @@
 /*
- * Chipper-8: browser front end.
+ * Chipper-8: browser hardware logic analyzer & front panel.
  *
- * Glues engine.js + assembler.js + roms.js into a playable emulator:
- *   - a requestAnimationFrame run loop with adjustable opcode rate and 60 Hz timers
- *   - 64x32 framebuffer rendering on a canvas
- *   - keyboard and on screen hex keypad input
- *   - a live CPU / register inspector and ROM source viewer
- *   - optional sound that stays completely muted until the toggle is clicked
+ * Glues engine.js + assembler.js + roms.js into a cycle-accurate workbench:
+ *   - requestAnimationFrame run loop with adjustable opcode clock (60..2000 Hz)
+ *     and 60 Hz delay/sound timers
+ *   - 64x32 CDP1861 PIXIE framebuffer rendered on an HTML5 canvas
+ *   - Hardware DIP switches for COSMAC VIP vs CHIP-48 / SUPER-CHIP quirks
+ *   - Cycle-accurate bus trace table & live 16-byte RAM window around PC
+ *   - Optional 440 Hz square wave buzzer that stays strictly muted on load
  *
- * No dependencies, no network calls, no autoplaying media.
+ * Zero dependencies, zero network calls, zero autoplaying audio.
  */
 (function () {
   'use strict';
 
   var C8 = window.Chipper8;
   if (!C8 || !C8.Chip8) {
-    document.body.innerHTML = '<p style="padding:40px;font:16px sans-serif">Failed to load engine.js</p>';
+    document.body.innerHTML = '<p style="padding:40px;font:14px monospace">Failed to load engine.js</p>';
     return;
   }
 
@@ -46,17 +47,25 @@
   var audioToggle = $('audioToggle');
   var mutedBadge = $('mutedBadge');
   var ghostToggle = $('ghostToggle');
+  var quirkLoadStore = $('quirkLoadStore');
+  var quirkShiftVy = $('quirkShiftVy');
+  var quirkJumpVx = $('quirkJumpVx');
+  var quirkLoadStoreLabel = $('quirkLoadStoreLabel');
+  var quirkShiftVyLabel = $('quirkShiftVyLabel');
+  var quirkJumpVxLabel = $('quirkJumpVxLabel');
   var scoreValue = $('scoreValue');
   var opCountEl = $('opCount');
   var frameCountEl = $('frameCount');
   var stateGrid = $('stateGrid');
   var regGrid = $('regGrid');
+  var busTraceBody = $('busTraceBody');
+  var ramWindow = $('ramWindow');
   var sourceCode = $('sourceCode');
   var sourceTag = $('sourceTag');
   var themeToggle = $('themeToggle');
   var toastEl = $('toast');
 
-  // Physical keyboard -> CHIP-8 hex key value. Mirrors the classic layout:
+  // Physical keyboard -> CHIP-8 hex key value (COSMAC VIP VP-580 layout):
   //   1 2 3 4      1 2 3 C
   //   Q W E R  ->  4 5 6 D
   //   A S D F      7 8 9 E
@@ -67,14 +76,12 @@
     'a': 0x7, 's': 0x8, 'd': 0x9, 'f': 0xE,
     'z': 0xA, 'x': 0x0, 'c': 0xB, 'v': 0xF
   };
-  // Reverse lookup so each on screen key can show its shortcut.
   var PHYSICAL = {};
   Object.keys(KEY_MAP).forEach(function (k) {
     var v = KEY_MAP[k];
     if (!PHYSICAL[v]) { PHYSICAL[v] = k.toUpperCase(); }
   });
 
-  // Display order of the 4x4 hex pad.
   var PAD_ORDER = [
     0x1, 0x2, 0x3, 0xC,
     0x4, 0x5, 0x6, 0xD,
@@ -101,7 +108,9 @@
   var audioEnabled = false;       // muted by default
   var audioCtx = null, osc = null, gainNode = null;
   var pointerKeys = Object.create(null);
-  var colors = { bg: '#08120e', pixel: '#7bf3b2', glow: 'rgba(123,243,178,0.55)' };
+  var traceBuffer = [];
+  var MAX_TRACE = 7;
+  var colors = { bg: '#100b03', pixel: '#ffb000', glow: 'rgba(255,176,0,0.55)' };
 
   // ---------------------------------------------------------------- Colors
   function refreshColors() {
@@ -110,9 +119,9 @@
       var v = style.getPropertyValue(name).trim();
       return v || fallback;
     }
-    colors.bg = read('--screen-bg', '#08120e');
-    colors.pixel = read('--screen-pixel', '#7bf3b2');
-    colors.glow = read('--screen-glow', 'rgba(123,243,178,0.55)');
+    colors.bg = read('--screen-bg', '#100b03');
+    colors.pixel = read('--screen-pixel', '#ffb000');
+    colors.glow = read('--screen-glow', 'rgba(255,176,0,0.55)');
   }
 
   // ---------------------------------------------------------------- Render
@@ -127,7 +136,6 @@
     } else {
       ctx.shadowBlur = 0;
     }
-    // One path + one fill keeps the glow effect cheap even with many pixels.
     ctx.beginPath();
     for (var y = 0; y < C8.Chip8.DISPLAY_HEIGHT; y++) {
       for (var x = 0; x < C8.Chip8.DISPLAY_WIDTH; x++) {
@@ -141,8 +149,6 @@
   }
 
   // ---------------------------------------------------------------- Audio
-  // The AudioContext is created lazily. It cannot exist until the user has
-  // explicitly clicked the Sound toggle, which keeps everything silent on load.
   function ensureAudio() {
     if (audioCtx) {
       if (audioCtx.state === 'suspended') { audioCtx.resume(); }
@@ -170,20 +176,42 @@
   function setAudioEnabled(on) {
     if (on && !ensureAudio()) {
       audioToggle.checked = false;
-      toast('This browser does not support Web Audio.');
+      toast('Web Audio API unavailable in this environment.');
       return;
     }
     audioEnabled = on;
-    mutedBadge.classList.toggle('hidden', on);
+    if (mutedBadge) {
+      mutedBadge.textContent = on ? 'ACTIVE (ST > 0)' : 'MUTED ON LOAD';
+    }
     updateSound();
-    toast(on ? 'Sound on. The beep follows the CHIP-8 sound timer.' : 'Sound muted.');
+    toast(on ? 'Piezo 440 Hz tone gated by ST register.' : 'Piezo tone muted.');
   }
 
-  // CHIP-8 convention: a tone plays for as long as ST is greater than zero.
   function updateSound() {
     if (!audioCtx || !gainNode) { return; }
     var shouldPlay = audioEnabled && running && cpu.soundTimer > 0;
     gainNode.gain.setTargetAtTime(shouldPlay ? 0.035 : 0, audioCtx.currentTime, 0.012);
+  }
+
+  // ---------------------------------------------------------------- Quirks
+  function syncQuirksFromUI() {
+    var noIncI = !!(quirkLoadStore && quirkLoadStore.checked);
+    var shiftVy = !!(quirkShiftVy && quirkShiftVy.checked);
+    var jumpVx = !!(quirkJumpVx && quirkJumpVx.checked);
+    cpu.quirks = {
+      loadStoreNoIncrementI: noIncI,
+      shiftUsesVy: shiftVy,
+      jumpUsesVx: jumpVx
+    };
+    if (quirkLoadStoreLabel) {
+      quirkLoadStoreLabel.textContent = noIncI ? 'CHIP-48: I UNCHANGED' : 'VIP: I = I + X + 1';
+    }
+    if (quirkShiftVyLabel) {
+      quirkShiftVyLabel.textContent = shiftVy ? 'VIP: VX = VY >> 1' : 'CHIP-48: SHR VX';
+    }
+    if (quirkJumpVxLabel) {
+      quirkJumpVxLabel.textContent = jumpVx ? 'CHIP-48: PC = XNN + VX' : 'VIP: PC = NNN + V0';
+    }
   }
 
   // ---------------------------------------------------------------- UI helpers
@@ -196,8 +224,8 @@
   }
 
   function setStatus(text, mode) {
-    statusText.textContent = text;
-    statusDot.className = 'status-dot' + (mode ? ' ' + mode : '');
+    statusText.textContent = text.toUpperCase();
+    statusDot.className = 'status-led' + (mode ? ' ' + mode : '');
   }
 
   function setButtons() {
@@ -213,14 +241,14 @@
     frameCountEl.textContent = fmt(frameCount);
   }
 
-  // ---------------------------------------------------------------- Inspector
+  // ---------------------------------------------------------------- Inspector & Bus Trace
   var STATE_FIELDS = [
-    { key: 'pc', label: 'PC' },
-    { key: 'I', label: 'I reg' },
-    { key: 'sp', label: 'SP' },
-    { key: 'dt', label: 'Delay' },
-    { key: 'st', label: 'Sound' },
-    { key: 'op', label: 'Last op' }
+    { key: 'pc', label: 'PC (ADDR)' },
+    { key: 'I', label: 'I (INDEX)' },
+    { key: 'sp', label: 'SP (STACK)' },
+    { key: 'dt', label: 'DT (60HZ)' },
+    { key: 'st', label: 'ST (TONE)' },
+    { key: 'op', label: 'IR (DECODE)' }
   ];
   var stateCells = Object.create(null);
   var regCells = [];
@@ -240,14 +268,77 @@
     for (var i = 0; i < 16; i++) {
       var cell2 = document.createElement('div');
       cell2.className = 'reg-cell' + (i === 0xF ? ' vf' : '');
-      cell2.innerHTML = '<div class="rk">V' + HEX[i] + '</div><div class="rv">00</div>';
+      cell2.innerHTML = '<span class="rk">V' + HEX[i] + '</span><span class="rv">00</span>';
       regGrid.appendChild(cell2);
       regCells.push(cell2.querySelector('.rv'));
     }
   }
 
   function hex3(v) { return '0x' + (v & 0xFFF).toString(16).toUpperCase().padStart(3, '0'); }
-  function hex2(v) { return '0x' + (v & 0xFF).toString(16).toUpperCase().padStart(2, '0'); }
+  function hex4(v) { return (v & 0xFFFF).toString(16).toUpperCase().padStart(4, '0'); }
+  function hex2(v) { return (v & 0xFF).toString(16).toUpperCase().padStart(2, '0'); }
+
+  function executeAndRecordStep() {
+    var pcBefore = cpu.pc;
+    var op = cpu.step();
+    opCount++;
+    traceBuffer.push({
+      cyc: opCount,
+      pc: pcBefore,
+      op: op,
+      mnem: cpu.disassemble(op),
+      I: cpu.I,
+      vf: cpu.V[0xF]
+    });
+    if (traceBuffer.length > MAX_TRACE) {
+      traceBuffer.shift();
+    }
+    return op;
+  }
+
+  function renderBusTrace() {
+    if (!busTraceBody) { return; }
+    if (traceBuffer.length === 0) {
+      busTraceBody.innerHTML = '<tr><td colspan="6" class="trace-empty">Step or run CPU to capture bus trace.</td></tr>';
+      return;
+    }
+    var rowsHtml = '';
+    for (var i = traceBuffer.length - 1; i >= 0; i--) {
+      var entry = traceBuffer[i];
+      var isLatest = (i === traceBuffer.length - 1);
+      rowsHtml += '<tr class="' + (isLatest ? 'trace-head-row' : '') + '">' +
+        '<td>' + String(entry.cyc).padStart(4, '0') + '</td>' +
+        '<td>' + hex3(entry.pc) + '</td>' +
+        '<td>' + hex4(entry.op) + '</td>' +
+        '<td>' + escapeHtml(entry.mnem) + '</td>' +
+        '<td>' + hex3(entry.I) + '</td>' +
+        '<td>' + entry.vf + '</td>' +
+        '</tr>';
+    }
+    busTraceBody.innerHTML = rowsHtml;
+  }
+
+  function renderRamWindow() {
+    if (!ramWindow) { return; }
+    var base = cpu.pc & 0xFF0;
+    if (base > 0xFF0) { base = 0xFF0; }
+    var lines = [];
+    for (var r = 0; r < 2; r++) {
+      var rowAddr = base + r * 8;
+      var parts = [hex3(rowAddr) + ':'];
+      for (var c = 0; c < 8; c++) {
+        var addr = (rowAddr + c) & 0xFFF;
+        var b = hex2(cpu.memory[addr]);
+        if (addr === cpu.pc || addr === ((cpu.pc + 1) & 0xFFF)) {
+          parts.push('<span class="pc-byte">' + b + '</span>');
+        } else {
+          parts.push(b);
+        }
+      }
+      lines.push(parts.join(' '));
+    }
+    ramWindow.innerHTML = lines.join('\n');
+  }
 
   function updateInspector() {
     stateCells.pc.textContent = hex3(cpu.pc);
@@ -258,8 +349,10 @@
     stateCells.op.textContent = cpu.lastOpcode
       ? cpu.disassemble(cpu.lastOpcode) : '-';
     for (var i = 0; i < 16; i++) {
-      regCells[i].textContent = (cpu.V[i] & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+      regCells[i].textContent = hex2(cpu.V[i]);
     }
+    renderBusTrace();
+    renderRamWindow();
     updateStats();
   }
 
@@ -300,7 +393,7 @@
   function setSource(rom) {
     var trimmed = rom.source.replace(/^\n/, '').replace(/\s+$/, '');
     sourceCode.innerHTML = '<code>' + trimmed.split('\n').map(highlightLine).join('\n') + '</code>';
-    sourceTag.textContent = rom.bytes.length + ' bytes';
+    sourceTag.textContent = rom.bytes.length + ' BYTES @ 0x200';
   }
 
   // ---------------------------------------------------------------- ROM library
@@ -317,10 +410,10 @@
         '<span class="rom-card-size"></span></div>' +
         '<p class="rom-card-blurb"></p>' +
         '<p class="rom-card-controls"></p>';
-      card.querySelector('.rom-card-name').textContent = rom.name;
-      card.querySelector('.rom-card-size').textContent = rom.bytes.length + ' B';
+      card.querySelector('.rom-card-name').textContent = rom.name.toUpperCase();
+      card.querySelector('.rom-card-size').textContent = rom.bytes.length + ' BYTES';
       card.querySelector('.rom-card-blurb').textContent = rom.blurb;
-      card.querySelector('.rom-card-controls').textContent = rom.controls;
+      card.querySelector('.rom-card-controls').textContent = 'KEYS: ' + rom.controls.toUpperCase();
       card.addEventListener('click', function () { loadRom(idx, true); });
       romListEl.appendChild(card);
     });
@@ -341,9 +434,9 @@
       var chip = document.createElement('span');
       chip.className = 'legend-chip';
       chip.innerHTML = '<b></b> ';
-      chip.querySelector('b').textContent = HEX[parseInt(k, 16)] + ' / ' +
-        (PHYSICAL[parseInt(k, 16)] || '?');
-      chip.appendChild(document.createTextNode(rom.keys[k]));
+      chip.querySelector('b').textContent = HEX[parseInt(k, 16)] + ' [' +
+        (PHYSICAL[parseInt(k, 16)] || '?') + ']';
+      chip.appendChild(document.createTextNode(' ' + rom.keys[k]));
       keyLegendEl.appendChild(chip);
     });
   }
@@ -405,14 +498,13 @@
     var steps = Math.min(Math.floor(cycleAcc), 4000);
     cycleAcc -= steps;
     for (var i = 0; i < steps; i++) {
-      cpu.step();
-      opCount++;
+      executeAndRecordStep();
       if (cpu.halted) {
         running = false;
         setButtons();
-        setStatus('Halted', '');
+        setStatus('HALTED', '');
         updateSound();
-        toast('CPU halted on an unknown opcode. Reset to continue.');
+        toast('CPU halted on unknown opcode. Reset to 0x200 to continue.');
         break;
       }
     }
@@ -446,7 +538,7 @@
     lastTime = performance.now();
     lastInspector = 0;
     setButtons();
-    setStatus('Running', 'running');
+    setStatus('RUNNING', 'running');
     screenOverlay.classList.add('hidden');
     updateSound();
     rafId = requestAnimationFrame(frame);
@@ -457,22 +549,21 @@
     running = false;
     cancelAnimationFrame(rafId);
     setButtons();
-    setStatus('Paused', 'paused');
+    setStatus('HALTED', 'paused');
     updateSound();
     updateInspector();
   }
 
   function stepOnce() {
     if (running) { pause(); }
-    cpu.step();
-    opCount++;
+    executeAndRecordStep();
     cpu.tickTimers();
     if (cpu.drawFlag) {
       render();
       cpu.drawFlag = false;
       frameCount++;
     }
-    setStatus(cpu.halted ? 'Halted' : 'Stepping', cpu.halted ? '' : 'paused');
+    setStatus(cpu.halted ? 'HALTED' : 'STEP', cpu.halted ? '' : 'paused');
     screenOverlay.classList.add('hidden');
     updateInspector();
   }
@@ -482,9 +573,23 @@
     releaseAllPointerKeys();
     for (var k = 0; k < 16; k++) { cpu.setKey(k, false); }
     loadRom(ROMS.indexOf(activeRom), false);
-    screenOverlay.classList.remove('hidden');
-    setStatus('Ready', '');
-    toast('Machine reset.');
+    toast('CPU reset to 0x200.');
+  }
+
+  function stepInitialFrame() {
+    // Advance through initial register setup and first sprite DRW ops so the
+    // 64x32 display shows the live game layout immediately on cartridge load.
+    var draws = 0;
+    for (var s = 0; s < 24 && !cpu.halted; s++) {
+      var op = executeAndRecordStep();
+      if ((op & 0xF000) === 0xD000) { draws++; }
+      if (draws >= 2) { break; }
+    }
+    if (cpu.drawFlag) {
+      render();
+      cpu.drawFlag = false;
+      frameCount = 1;
+    }
   }
 
   function loadRom(index, autoplay) {
@@ -495,7 +600,7 @@
 
     cpu.reset();
     cpu.rng = Math.random;
-    cpu.quirks = { loadStoreNoIncrementI: false, shiftUsesVy: false, jumpUsesVx: false };
+    syncQuirksFromUI();
     cpu.load(rom.bytes);
 
     activeRom = rom;
@@ -503,27 +608,38 @@
     frameCount = 0;
     cycleAcc = 0;
     timerAcc = 0;
+    traceBuffer = [];
     running = false;
     cancelAnimationFrame(rafId);
+
+    stepInitialFrame();
 
     markActiveRom(index);
     buildKeyLegend(rom);
     setSource(rom);
-    romControlsEl.textContent = rom.controls;
-    activeRomName.textContent = rom.name;
+    romControlsEl.textContent = 'CARTRIDGE INPUTS: ' + rom.controls;
+    activeRomName.textContent = rom.name.toUpperCase() + ' (' + rom.bytes.length + ' B)';
     render();
     updateInspector();
     setButtons();
-    setStatus('Ready', '');
+    setStatus('READY', '');
     screenOverlay.classList.remove('hidden');
 
     if (autoplay) { play(); }
   }
 
   // ---------------------------------------------------------------- Theme
+  var THEMES = ['amber', 'green', 'light'];
+  var THEME_LABELS = {
+    amber: 'PHOSPHOR: P3 AMBER',
+    green: 'PHOSPHOR: P1 GREEN',
+    light: 'MANUAL: BENCH PAPER'
+  };
+
   function applyTheme(theme) {
+    if (THEMES.indexOf(theme) === -1) { theme = 'amber'; }
     document.documentElement.setAttribute('data-theme', theme);
-    themeToggle.querySelector('span').textContent = theme === 'light' ? '☀' : '☽';
+    themeToggle.querySelector('span').textContent = THEME_LABELS[theme];
     try { localStorage.setItem('chipper8-theme', theme); } catch (e) { /* ignore */ }
     refreshColors();
     render();
@@ -532,7 +648,8 @@
   function initTheme() {
     var saved = null;
     try { saved = localStorage.getItem('chipper8-theme'); } catch (e) { /* ignore */ }
-    applyTheme(saved === 'light' ? 'light' : 'dark');
+    if (saved === 'dark') { saved = 'green'; }
+    applyTheme(THEMES.indexOf(saved) !== -1 ? saved : 'amber');
   }
 
   // ---------------------------------------------------------------- Events
@@ -559,7 +676,6 @@
   function onKeyUp(e) {
     var key = e.key.toLowerCase();
     if (Object.prototype.hasOwnProperty.call(KEY_MAP, key)) {
-      // Do not release a key that the on screen keypad is still holding.
       if (!pointerKeys[KEY_MAP[key]]) { pressKey(KEY_MAP[key], false); }
     }
   }
@@ -589,9 +705,20 @@
       setAudioEnabled(audioToggle.checked);
     });
 
+    if (quirkLoadStore) {
+      quirkLoadStore.addEventListener('change', syncQuirksFromUI);
+    }
+    if (quirkShiftVy) {
+      quirkShiftVy.addEventListener('change', syncQuirksFromUI);
+    }
+    if (quirkJumpVx) {
+      quirkJumpVx.addEventListener('change', syncQuirksFromUI);
+    }
+
     themeToggle.addEventListener('click', function () {
-      var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-      applyTheme(next);
+      var cur = document.documentElement.getAttribute('data-theme') || 'amber';
+      var nextIdx = (THEMES.indexOf(cur) + 1) % THEMES.length;
+      applyTheme(THEMES[nextIdx]);
     });
 
     document.addEventListener('keydown', onKeyDown);
@@ -612,8 +739,7 @@
     bindEvents();
     initTheme();
     speedValue.textContent = fmt(speed) + ' Hz';
-    audioToggle.checked = false;   // sound muted by default
-    mutedBadge.classList.remove('hidden');
+    audioToggle.checked = false;
     loadRom(0, false);
   }
 
