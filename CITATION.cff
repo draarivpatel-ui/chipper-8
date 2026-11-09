@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Chipper-8"
+abstract: >-
+  A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA
+  COSMAC VIP hardware logic analyzer bench that runs in the browser and in
+  Node.js. Includes four original CHIP-8 games, a cycle-accurate bus trace, a
+  RAM window around the program counter, and switchable interpreter quirks.
+type: software
+license: MIT
+repository-code: "https://github.com/draarivpatel-ui/chipper-8"
+url: "https://draarivpatel-ui.github.io/chipper-8/"
+keywords:
+  - chip-8
+  - emulator
+  - virtual machine
+  - assembler
+  - cosmac-vip
+  - retro-computing
+  - javascript
+  - zero-dependency
+authors:
+  - family-names: "Patel"
+    given-names: "Aariv"
+    alias: "draarivpatel-ui"
+preferred-citation:
+  type: software
+  title: "Chipper-8"
+  version: "1.0.0"
+  date-released: "2026-11-08"
+  license: MIT
+  url: "https://draarivpatel-ui.github.io/chipper-8/"
+  authors:
+    - family-names: "Patel"
+      given-names: "Aariv"
+      alias: "draarivpatel-ui"
