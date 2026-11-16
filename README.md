@@ -1,6 +1,6 @@
 # Chipper-8
 
-A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMAC VIP hardware logic analyzer bench that runs in the browser and in Node.js. It includes four original games written in CHIP-8 assembly, compiled into bytecode at page load, paired with a cycle-accurate bus trace, a 16-byte RAM window around the program counter, and hardware DIP switches for historical interpreter quirks.
+A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMAC VIP hardware workbench that runs in the browser and in Node.js. It includes four original games written in CHIP-8 assembly, compiled into bytecode at page load, paired with an instruction-level trace, a 16-byte RAM window around the program counter, and hardware DIP switches for historical interpreter quirks.
 
 [Launch the workbench on GitHub Pages](https://draarivpatel-ui.github.io/chipper-8/)
 
@@ -13,7 +13,7 @@ A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMA
   - `SW2 (8XY6/8XYE VY-SRC)`: COSMAC VIP copies `Vy` into `Vx` before shifting; CHIP-48 shifts `Vx` in place.
   - `SW3 (BNNN VX-JUMP)`: COSMAC VIP jumps to `NNN + V0`; CHIP-48 jumps to `XNN + Vx`.
   - `SW4 (CRT BLOOM)` & `SW5 (PIEZO 440 HZ)`: Optional phosphor halation and a 440 Hz square-wave tone generator that stays strictly muted on load (`AudioContext` is instantiated only after user interaction).
-- **Cycle-Accurate Bus Trace & RAM Inspector**: Every executed instruction is logged to a live trace table showing cycle count, instruction address (`PC`), 16-bit opcode word, disassembled mnemonic, index register (`I`), and carry/collision flag (`VF`), alongside a live 16-byte RAM hex window highlighting `[PC, PC+1]`.
+- **Instruction-Level Trace & RAM Inspector**: Every executed instruction is logged to a live trace table showing step count, instruction address (`PC`), 16-bit opcode word, disassembled mnemonic, index register (`I`), and carry/collision flag (`VF`), alongside a live 16-byte RAM hex window highlighting `[PC, PC+1]`.
 - **Three Bench Display Modes**: Cycle between `P3 AMBER` (1977 warm amber phosphor), `P1 GREEN` (classic green oscilloscope phosphor), and `BENCH PAPER` (Heathkit technical manual daylight theme).
 
 ## Quick Start
@@ -39,10 +39,10 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 
 | Cartridge | Bytes | Hex Keys | Mechanics |
 | --------- | ----- | -------- | --------- |
-| **Pong** | 162 B | `2` up, `8` down | Solo wall return. Uses `SUB` borrow flags in `VF` to test whether ball `Y` (`V1`) lands inside the 5-pixel paddle (`V4..V4+4`). Score is tracked in `V7`. |
+| **Pong** | 186 B | `2` up, `8` down | Solo wall return. Uses `SUB` borrow flags in `VF` to test whether ball `Y` (`V1`) lands inside the 5-pixel paddle (`V4..V4+4`). Score is tracked in `V7`. |
 | **Catch** | 102 B | `4` left, `6` right | Falling dot catcher. Uses `RND V0, 63` (`CXKK`) to spawn drops and 8-pixel bounding comparisons in `VF`. |
-| **Navigator** | 112 B | `2` up, `4` left, `6` right, `8` down | Steer a 4x4 sprite onto a wandering target. Uses the hardware `DXYN` XOR collision latch (`VF = 1` when an active pixel is erased) to detect hits. |
-| **Blaster** | 175 B | `4` left, `6` right, `5` fire | Vertical shooter with active projectile state (`V5 = 255` sentinel when idle) and 2D borrow-flag hit detection. |
+| **Navigator** | 106 B | `2` up, `4` left, `6` right, `8` down | Steer a 4x4 sprite onto a wandering target. Uses the hardware `DXYN` XOR collision latch (`VF = 1` when an active pixel is erased) to detect hits. |
+| **Blaster** | 190 B | `4` left, `6` right, `5` fire | Vertical shooter with active projectile state (`V5 = 255` sentinel when idle) and 2D borrow-flag hit detection. |
 
 ## Running the Test Suite
 
@@ -50,7 +50,7 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 node --test tests/
 ```
 
-All 63 unit tests in `tests/engine.test.js` run against `engine.js` using Node's built-in test runner with zero external packages.
+All 116 tests across `tests/` (engine, assembler, content, regression, and DOM suites) run using Node's built-in test runner with zero external packages.
 
 ## License
 

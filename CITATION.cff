@@ -4,7 +4,7 @@ title: "Chipper-8"
 abstract: >-
   A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA
   COSMAC VIP hardware logic analyzer bench that runs in the browser and in
-  Node.js. Includes four original CHIP-8 games, a cycle-accurate bus trace, a
+  Node.js. Includes four original CHIP-8 games, an instruction-level trace, a
   RAM window around the program counter, and switchable interpreter quirks.
 type: software
 license: MIT

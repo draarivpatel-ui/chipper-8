@@ -20,6 +20,7 @@
   } else {
     root.Chipper8 = root.Chipper8 || {};
     root.Chipper8.assemble = api.assemble;
+    root.Chipper8.assembleDetailed = api.assembleDetailed;
     root.Chipper8.AssemblerError = api.AssemblerError;
   }
 }(typeof self !== 'undefined' ? self : this, function () {
@@ -33,12 +34,15 @@
   AssemblerError.prototype = Object.create(Error.prototype);
   AssemblerError.prototype.constructor = AssemblerError;
 
-  function isReg(t) { return /^V[0-9A-Fa-f]$/.test(t); }
-  function reg(t) { return parseInt(t.charAt(1), 16); }
+  function isReg(t) { return /^V[0-9A-Fa-f]$/i.test(t); }
+  function reg(t) {
+    if (!isReg(t)) throw new AssemblerError('Expected a register V0 through VF, received ' + String(t));
+    return parseInt(String(t).charAt(1), 16);
+  }
 
   function parseNum(token, labels) {
     var t = String(token).trim();
-    if (/^0x[0-9A-Fa-f]+$/.test(t)) { return parseInt(t.slice(2), 16); }
+    if (/^0x[0-9A-Fa-f]+$/i.test(t)) { return parseInt(t.slice(2), 16); }
     if (/^\$[0-9A-Fa-f]+$/.test(t)) { return parseInt(t.slice(1), 16); }
     if (/^[0-9]+$/.test(t)) { return parseInt(t, 10); }
     if (Object.prototype.hasOwnProperty.call(labels, t)) { return labels[t]; }
@@ -85,7 +89,23 @@
   function encode(stmt, labels, out) {
     var ops = stmt.ops;
     var o0 = ops[0], o1 = ops[1], o2 = ops[2];
+    var u0 = o0 !== undefined ? o0.toUpperCase() : '';
+    var u1 = o1 !== undefined ? o1.toUpperCase() : '';
     var x, y, kk, nnn, n;
+    var counts = { CLS: [0], RET: [0], SYS: [1], JP: [1, 2], CALL: [1], JPV0: [1],
+      SE: [2], SNE: [2], LD: [2], ADD: [2], OR: [2], AND: [2], XOR: [2], SUB: [2], SUBN: [2],
+      SHR: [1, 2], SHL: [1, 2], RND: [2], DRW: [3], SKP: [1], SKNP: [1] };
+    if (stmt.mn === 'DB' || stmt.mn === 'DW') {
+      if (!ops.length) throw new AssemblerError(stmt.mn + ' needs at least one value.');
+    } else if (counts[stmt.mn] && counts[stmt.mn].indexOf(ops.length) === -1) {
+      throw new AssemblerError('Wrong operand count for ' + stmt.mn + '.');
+    }
+    if (ops.some(function (v) { return v === ''; })) throw new AssemblerError('Empty operand.');
+    function bounded(token, limit) {
+      var value = parseNum(token, labels);
+      if (!Number.isSafeInteger(value) || value < 0 || value > limit) throw new AssemblerError('Value ' + token + ' must be between 0 and ' + limit + '.');
+      return value;
+    }
 
     function word(v) {
       out.push((v >> 8) & 0xFF, v & 0xFF);
@@ -94,51 +114,56 @@
 
     switch (stmt.mn) {
       case 'DB':
-        for (var d = 0; d < ops.length; d++) { byte(parseNum(ops[d], labels)); }
+        for (var d = 0; d < ops.length; d++) { byte(bounded(ops[d], 255)); }
         return;
       case 'DW':
-        for (var w = 0; w < ops.length; w++) { word(parseNum(ops[w], labels)); }
+        for (var w = 0; w < ops.length; w++) { word(bounded(ops[w], 65535)); }
         return;
       case 'CLS': word(0x00E0); return;
       case 'RET': word(0x00EE); return;
-      case 'SYS': word(0x0000 | (parseNum(o0, labels) & 0x0FFF)); return;
-      case 'JP': word(0x1000 | (parseNum(o0, labels) & 0x0FFF)); return;
-      case 'CALL': word(0x2000 | (parseNum(o0, labels) & 0x0FFF)); return;
-      case 'JPV0': word(0xB000 | (parseNum(o0, labels) & 0x0FFF)); return;
+      case 'SYS': word(0x0000 | bounded(o0, 4095)); return;
+      case 'JP':
+        if (ops.length === 2) {
+          if (u0 !== 'V0') throw new AssemblerError('Offset jump syntax is JP V0, address.');
+          word(0xB000 | bounded(o1, 4095));
+        } else word(0x1000 | bounded(o0, 4095));
+        return;
+      case 'CALL': word(0x2000 | bounded(o0, 4095)); return;
+      case 'JPV0': word(0xB000 | bounded(o0, 4095)); return;
 
       case 'SE':
         x = reg(o0);
         if (isReg(o1)) { word(0x5000 | (x << 8) | (reg(o1) << 4)); }
-        else { word(0x3000 | (x << 8) | (parseNum(o1, labels) & 0xFF)); }
+        else { word(0x3000 | (x << 8) | bounded(o1, 255)); }
         return;
       case 'SNE':
         x = reg(o0);
         if (isReg(o1)) { word(0x9000 | (x << 8) | (reg(o1) << 4)); }
-        else { word(0x4000 | (x << 8) | (parseNum(o1, labels) & 0xFF)); }
+        else { word(0x4000 | (x << 8) | bounded(o1, 255)); }
         return;
 
       case 'LD':
-        if (o0 === 'I') { word(0xA000 | (parseNum(o1, labels) & 0x0FFF)); return; }
-        if (o0 === 'DT') { word(0xF015 | (reg(o1) << 8)); return; }
-        if (o0 === 'ST') { word(0xF018 | (reg(o1) << 8)); return; }
-        if (o0 === 'F') { word(0xF029 | (reg(o1) << 8)); return; }
-        if (o0 === 'B') { word(0xF033 | (reg(o1) << 8)); return; }
-        if (o0 === '[I]') { word(0xF055 | (reg(o1) << 8)); return; }
+        if (u0 === 'I') { word(0xA000 | bounded(o1, 4095)); return; }
+        if (u0 === 'DT') { word(0xF015 | (reg(o1) << 8)); return; }
+        if (u0 === 'ST') { word(0xF018 | (reg(o1) << 8)); return; }
+        if (u0 === 'F') { word(0xF029 | (reg(o1) << 8)); return; }
+        if (u0 === 'B') { word(0xF033 | (reg(o1) << 8)); return; }
+        if (u0 === '[I]') { word(0xF055 | (reg(o1) << 8)); return; }
         if (!isReg(o0)) { throw new AssemblerError('Bad LD destination: ' + o0); }
         x = reg(o0);
-        if (o1 === 'DT') { word(0xF007 | (x << 8)); return; }
-        if (o1 === 'K') { word(0xF00A | (x << 8)); return; }
-        if (o1 === '[I]') { word(0xF065 | (x << 8)); return; }
+        if (u1 === 'DT') { word(0xF007 | (x << 8)); return; }
+        if (u1 === 'K') { word(0xF00A | (x << 8)); return; }
+        if (u1 === '[I]') { word(0xF065 | (x << 8)); return; }
         if (isReg(o1)) { word(0x8000 | (x << 8) | (reg(o1) << 4)); return; }
-        word(0x6000 | (x << 8) | (parseNum(o1, labels) & 0xFF));
+        word(0x6000 | (x << 8) | bounded(o1, 255));
         return;
 
       case 'ADD':
-        if (o0 === 'I') { word(0xF01E | (reg(o1) << 8)); return; }
+        if (u0 === 'I') { word(0xF01E | (reg(o1) << 8)); return; }
         if (!isReg(o0)) { throw new AssemblerError('Bad ADD destination: ' + o0); }
         x = reg(o0);
         if (isReg(o1)) { word(0x8004 | (x << 8) | (reg(o1) << 4)); return; }
-        word(0x7000 | (x << 8) | (parseNum(o1, labels) & 0xFF));
+        word(0x7000 | (x << 8) | bounded(o1, 255));
         return;
 
       case 'OR': word(0x8001 | (reg(o0) << 8) | (reg(o1) << 4)); return;
@@ -146,12 +171,12 @@
       case 'XOR': word(0x8003 | (reg(o0) << 8) | (reg(o1) << 4)); return;
       case 'SUB': word(0x8005 | (reg(o0) << 8) | (reg(o1) << 4)); return;
       case 'SUBN': word(0x8007 | (reg(o0) << 8) | (reg(o1) << 4)); return;
-      case 'SHR': word(0x8006 | (reg(o0) << 8)); return;
-      case 'SHL': word(0x800E | (reg(o0) << 8)); return;
+      case 'SHR': word(0x8006 | (reg(o0) << 8) | ((o1 === undefined ? 0 : reg(o1)) << 4)); return;
+      case 'SHL': word(0x800E | (reg(o0) << 8) | ((o1 === undefined ? 0 : reg(o1)) << 4)); return;
 
-      case 'RND': word(0xC000 | (reg(o0) << 8) | (parseNum(o1, labels) & 0xFF)); return;
+      case 'RND': word(0xC000 | (reg(o0) << 8) | bounded(o1, 255)); return;
       case 'DRW':
-        x = reg(o0); y = reg(o1); n = parseNum(o2, labels) & 0xF;
+        x = reg(o0); y = reg(o1); n = bounded(o2, 15);
         word(0xD000 | (x << 8) | (y << 4) | n);
         return;
       case 'SKP': word(0xE09E | (reg(o0) << 8)); return;
@@ -162,8 +187,9 @@
     }
   }
 
-  function assemble(source, origin) {
+  function assemble(source, origin, detailed) {
     var base = (origin === undefined) ? 0x200 : origin;
+    if (!Number.isInteger(base) || base < 0 || base > 4095) throw new AssemblerError('Origin must be an address from 0 to 4095.');
     var lines = String(source).split(/\r?\n/);
     var parsed = lines.map(parseLine);
 
@@ -174,7 +200,7 @@
       for (var l = 0; l < parsed[i].labels.length; l++) {
         var name = parsed[i].labels[l];
         if (Object.prototype.hasOwnProperty.call(labels, name)) {
-          throw new AssemblerError('Duplicate label: ' + name);
+          throw new AssemblerError('Line ' + (i + 1) + ': duplicate label ' + name);
         }
         labels[name] = base + addr;
       }
@@ -182,15 +208,24 @@
     }
 
     // Pass 2: emit bytes.
-    var out = [];
+    var out = [], listing = [];
     for (var j = 0; j < parsed.length; j++) {
-      if (parsed[j].stmt) { encode(parsed[j].stmt, labels, out); }
+      if (parsed[j].stmt) {
+        var start = out.length;
+        try { encode(parsed[j].stmt, labels, out); }
+        catch (error) {
+          if (!(error instanceof AssemblerError)) throw error;
+          throw new AssemblerError('Line ' + (j + 1) + ': ' + error.message);
+        }
+        listing.push({ line: j + 1, address: base + start, bytes: out.slice(start) });
+      }
     }
     if (out.length > 0x1000 - base) {
       throw new AssemblerError('Program too large: ' + out.length + ' bytes');
     }
-    return new Uint8Array(out);
+    var bytes = new Uint8Array(out);
+    return detailed ? { bytes: bytes, labels: labels, listing: listing } : bytes;
   }
 
-  return { assemble: assemble, AssemblerError: AssemblerError, parseLine: parseLine };
+  return { assemble: assemble, assembleDetailed: function (source, origin) { return assemble(source, origin, true); }, AssemblerError: AssemblerError, parseLine: parseLine };
 }));

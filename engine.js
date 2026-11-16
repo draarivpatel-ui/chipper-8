@@ -57,7 +57,7 @@
     this.rng = Math.random;
     // When true, FX55 / FX65 do not advance the I register (modern quirk).
     // Defaults to false, matching the original COSMAC VIP interpreter.
-    this.quirks = { loadStoreNoIncrementI: false, shiftUsesVy: false, jumpUsesVx: false };
+    this.quirks = { loadStoreNoIncrementI: false, shiftUsesVy: false, jumpUsesVx: false, logicResetsVf: false, clipSprites: false, waitForRelease: false };
     this.reset();
   }
 
@@ -77,6 +77,11 @@
     this.drawFlag = false;
     this.halted = false;
     this.lastOpcode = 0;
+    this.error = null;
+    this.waitingForKey = null;
+    this.waitKey = null;
+    this.releasedKey = null;
+    this.instructionsExecuted = 0;
 
     for (var i = 0; i < FONTSET.length; i++) {
       this.memory[i] = FONTSET[i];
@@ -91,10 +96,14 @@
       bytes = [];
       for (var s = 0; s < rom.length; s++) { bytes.push(rom.charCodeAt(s) & 0xFF); }
     }
-    var end = Math.min(bytes.length, MEMORY_SIZE - PROGRAM_START);
-    for (var i = 0; i < end; i++) {
-      this.memory[PROGRAM_START + i] = bytes[i] & 0xFF;
+    if (!bytes || !Number.isInteger(bytes.length) || bytes.length < 1 || bytes.length > MEMORY_SIZE - PROGRAM_START) {
+      throw new RangeError('ROM must contain 1 to 3584 bytes.');
     }
+    for (var check = 0; check < bytes.length; check++) {
+      if (!Number.isInteger(bytes[check]) || bytes[check] < 0 || bytes[check] > 255) throw new RangeError('ROM values must be bytes.');
+    }
+    this.reset();
+    for (var i = 0; i < bytes.length; i++) this.memory[PROGRAM_START + i] = bytes[i];
     this.pc = PROGRAM_START;
     this.halted = false;
     return this;
@@ -110,7 +119,11 @@
   };
 
   Chip8.prototype.setKey = function (key, down) {
-    if (key >= 0 && key < NUM_REGISTERS) {
+    if (Number.isInteger(key) && key >= 0 && key < NUM_REGISTERS) {
+      if (this.waitingForKey !== null && this.quirks.waitForRelease) {
+        if (down && !this.keys[key] && this.waitKey === null) this.waitKey = key;
+        if (!down && this.keys[key] && this.waitKey === key) this.releasedKey = key;
+      }
       this.keys[key] = down ? 1 : 0;
     }
   };
@@ -147,7 +160,7 @@
       case 0x2: return 'CALL ' + hex(nnn, 3);
       case 0x3: return 'SE V' + x.toString(16).toUpperCase() + ', ' + hex(kk, 2);
       case 0x4: return 'SNE V' + x.toString(16).toUpperCase() + ', ' + hex(kk, 2);
-      case 0x5: return 'SE V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
+      case 0x5: return n === 0 ? 'SE V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase() : 'DW ' + hex(a, 4);
       case 0x6: return 'LD V' + x.toString(16).toUpperCase() + ', ' + hex(kk, 2);
       case 0x7: return 'ADD V' + x.toString(16).toUpperCase() + ', ' + hex(kk, 2);
       case 0x8:
@@ -158,12 +171,12 @@
           case 0x3: return 'XOR V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
           case 0x4: return 'ADD V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
           case 0x5: return 'SUB V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
-          case 0x6: return 'SHR V' + x.toString(16).toUpperCase();
+          case 0x6: return 'SHR V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
           case 0x7: return 'SUBN V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
-          case 0xE: return 'SHL V' + x.toString(16).toUpperCase();
+          case 0xE: return 'SHL V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
           default: return 'DW ' + hex(a, 4);
         }
-      case 0x9: return 'SNE V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase();
+      case 0x9: return n === 0 ? 'SNE V' + x.toString(16).toUpperCase() + ', V' + y.toString(16).toUpperCase() : 'DW ' + hex(a, 4);
       case 0xA: return 'LD I, ' + hex(nnn, 3);
       case 0xB: return 'JP V0, ' + hex(nnn, 3);
       case 0xC: return 'RND V' + x.toString(16).toUpperCase() + ', ' + hex(kk, 2);
@@ -194,8 +207,10 @@
   Chip8.prototype.step = function () {
     if (this.halted) { return this.lastOpcode; }
 
+    if (!Number.isInteger(this.pc) || this.pc < 0 || this.pc >= MEMORY_SIZE - 1) { this.fault('Program counter is outside executable memory.'); return this.lastOpcode; }
     var opcode = (this.memory[this.pc] << 8) | this.memory[this.pc + 1];
     this.lastOpcode = opcode;
+    this.instructionsExecuted++;
     this.pc = (this.pc + 2) & 0xFFFF;
 
     var family = (opcode & 0xF000) >> 12;
@@ -205,6 +220,7 @@
     var kk = opcode & 0x00FF;
     var nnn = opcode & 0x0FFF;
     var i, sum, pixel, spriteByte, bit, px, py, idx, key, found;
+    var vx = this.V[x], vy = this.V[y];
 
     switch (family) {
       case 0x0:
@@ -213,8 +229,8 @@
           this.clearDisplay();
         } else if (opcode === 0x00EE) {
           // 00EE - RET: return from subroutine.
+          if (this.sp === 0) { this.fault('Return stack underflow.'); break; }
           this.sp -= 1;
-          if (this.sp < 0) { this.sp = 0; }
           this.pc = this.stack[this.sp];
         } else {
           // 0NNN - SYS: ignored on modern interpreters (no machine code call).
@@ -228,8 +244,9 @@
 
       case 0x2:
         // 2NNN - CALL addr.
+        if (this.sp >= STACK_SIZE) { this.fault('Call stack overflow.'); break; }
         this.stack[this.sp] = this.pc;
-        this.sp = (this.sp + 1) % STACK_SIZE;
+        this.sp++;
         this.pc = nnn;
         break;
 
@@ -245,7 +262,8 @@
 
       case 0x5:
         // 5XY0 - SE Vx, Vy: skip if registers equal.
-        if (n === 0 && this.V[x] === this.V[y]) { this.pc = (this.pc + 2) & 0xFFFF; }
+        if (n !== 0) { this.fault('Invalid register skip opcode.'); break; }
+        if (this.V[x] === this.V[y]) { this.pc = (this.pc + 2) & 0xFFFF; }
         break;
 
       case 0x6:
@@ -264,46 +282,50 @@
             this.V[x] = this.V[y];
             break;
           case 0x1: // 8XY1 - OR Vx, Vy
-            this.V[x] = this.V[x] | this.V[y];
+            this.V[x] = vx | vy;
+            if (this.quirks.logicResetsVf) this.V[0xF] = 0;
             break;
           case 0x2: // 8XY2 - AND Vx, Vy
-            this.V[x] = this.V[x] & this.V[y];
+            this.V[x] = vx & vy;
+            if (this.quirks.logicResetsVf) this.V[0xF] = 0;
             break;
           case 0x3: // 8XY3 - XOR Vx, Vy
-            this.V[x] = this.V[x] ^ this.V[y];
+            this.V[x] = vx ^ vy;
+            if (this.quirks.logicResetsVf) this.V[0xF] = 0;
             break;
           case 0x4: // 8XY4 - ADD Vx, Vy with carry in VF
-            sum = this.V[x] + this.V[y];
-            this.V[0xF] = sum > 0xFF ? 1 : 0;
+            sum = vx + vy;
             this.V[x] = sum & 0xFF;
+            this.V[0xF] = sum > 0xFF ? 1 : 0;
             break;
           case 0x5: // 8XY5 - SUB Vx, Vy. VF = NOT borrow.
-            this.V[0xF] = this.V[x] >= this.V[y] ? 1 : 0;
-            this.V[x] = (this.V[x] - this.V[y]) & 0xFF;
+            this.V[x] = (vx - vy) & 0xFF;
+            this.V[0xF] = vx >= vy ? 1 : 0;
             break;
           case 0x6: // 8XY6 - SHR Vx. VF = least significant bit before shift.
-            if (this.quirks.shiftUsesVy) { this.V[x] = this.V[y]; }
-            this.V[0xF] = this.V[x] & 0x1;
-            this.V[x] = (this.V[x] >> 1) & 0xFF;
+            var rightValue = this.quirks.shiftUsesVy ? vy : vx;
+            this.V[x] = rightValue >> 1;
+            this.V[0xF] = rightValue & 1;
             break;
           case 0x7: // 8XY7 - SUBN Vx, Vy. VF = NOT borrow.
-            this.V[0xF] = this.V[y] >= this.V[x] ? 1 : 0;
-            this.V[x] = (this.V[y] - this.V[x]) & 0xFF;
+            this.V[x] = (vy - vx) & 0xFF;
+            this.V[0xF] = vy >= vx ? 1 : 0;
             break;
           case 0xE: // 8XYE - SHL Vx. VF = most significant bit before shift.
-            if (this.quirks.shiftUsesVy) { this.V[x] = this.V[y]; }
-            this.V[0xF] = (this.V[x] & 0x80) ? 1 : 0;
-            this.V[x] = (this.V[x] << 1) & 0xFF;
+            var leftValue = this.quirks.shiftUsesVy ? vy : vx;
+            this.V[x] = (leftValue << 1) & 0xFF;
+            this.V[0xF] = leftValue >> 7;
             break;
           default:
-            this.halted = true;
+            this.fault('Unknown opcode ' + hex(opcode, 4) + '.');
             break;
         }
         break;
 
       case 0x9:
         // 9XY0 - SNE Vx, Vy: skip if registers not equal.
-        if (n === 0 && this.V[x] !== this.V[y]) { this.pc = (this.pc + 2) & 0xFFFF; }
+        if (n !== 0) { this.fault('Invalid register skip opcode.'); break; }
+        if (this.V[x] !== this.V[y]) { this.pc = (this.pc + 2) & 0xFFFF; }
         break;
 
       case 0xA:
@@ -325,13 +347,14 @@
         // DXYN - DRW Vx, Vy, nibble. XOR sprite into framebuffer, wrap coordinates,
         // and set VF when any lit pixel is toggled off (collision).
         this.V[0xF] = 0;
-        var startX = this.V[x] % DISPLAY_WIDTH;
-        var startY = this.V[y] % DISPLAY_HEIGHT;
+        var startX = vx % DISPLAY_WIDTH;
+        var startY = vy % DISPLAY_HEIGHT;
         for (var row = 0; row < n; row++) {
           spriteByte = this.memory[(this.I + row) & 0xFFF];
           for (var col = 0; col < 8; col++) {
             bit = (spriteByte >> (7 - col)) & 0x1;
             if (bit === 0) { continue; }
+            if (this.quirks.clipSprites && (startX + col >= DISPLAY_WIDTH || startY + row >= DISPLAY_HEIGHT)) continue;
             px = (startX + col) % DISPLAY_WIDTH;
             py = (startY + row) % DISPLAY_HEIGHT;
             idx = py * DISPLAY_WIDTH + px;
@@ -351,7 +374,7 @@
           // EXA1 - SKNP Vx: skip if key in Vx is not down.
           if (this.keys[this.V[x] & 0xF] !== 1) { this.pc = (this.pc + 2) & 0xFFFF; }
         } else {
-          this.halted = true;
+          this.fault('Unknown opcode ' + hex(opcode, 4) + '.');
         }
         break;
 
@@ -360,16 +383,20 @@
           case 0x07: // FX07 - LD Vx, DT
             this.V[x] = this.delayTimer & 0xFF;
             break;
-          case 0x0A: { // FX0A - LD Vx, K: wait for a key press.
+          case 0x0A: {
             found = -1;
-            for (key = 0; key < NUM_REGISTERS; key++) {
-              if (this.keys[key] === 1) { found = key; break; }
+            if (this.quirks.waitForRelease) {
+              if (this.waitingForKey === null) { this.waitingForKey = x; this.waitKey = null; this.releasedKey = null; }
+              if (this.releasedKey !== null) found = this.releasedKey;
+            } else {
+              this.waitingForKey = x;
+              for (key = 0; key < NUM_REGISTERS; key++) if (this.keys[key] === 1) { found = key; break; }
             }
             if (found === -1) {
-              // Rewind so this instruction is re-executed next step.
-              this.pc = (this.pc - 2) & 0xFFFF;
+              this.pc -= 2; this.instructionsExecuted--;
             } else {
               this.V[x] = found;
+              this.waitingForKey = null; this.waitKey = null; this.releasedKey = null;
             }
             break;
           }
@@ -403,17 +430,32 @@
             if (!this.quirks.loadStoreNoIncrementI) { this.I = (this.I + x + 1) & 0xFFFF; }
             break;
           default:
-            this.halted = true;
+            this.fault('Unknown opcode ' + hex(opcode, 4) + '.');
             break;
         }
         break;
 
       default:
-        this.halted = true;
+        this.fault('Unknown opcode ' + hex(opcode, 4) + '.');
         break;
     }
 
     return opcode;
+  };
+
+  Chip8.prototype.fault = function (message) {
+    this.halted = true; this.error = message; this.soundTimer = 0;
+  };
+  Chip8.PROFILES = Object.freeze({
+    modern: Object.freeze({ loadStoreNoIncrementI: false, shiftUsesVy: false, jumpUsesVx: false, logicResetsVf: false, clipSprites: false, waitForRelease: false }),
+    vip: Object.freeze({ loadStoreNoIncrementI: false, shiftUsesVy: true, jumpUsesVx: false, logicResetsVf: true, clipSprites: true, waitForRelease: true }),
+    chip48: Object.freeze({ loadStoreNoIncrementI: true, shiftUsesVy: false, jumpUsesVx: true, logicResetsVf: false, clipSprites: true, waitForRelease: false })
+  });
+  Chip8.prototype.setProfile = function (name) {
+    if (!Object.prototype.hasOwnProperty.call(Chip8.PROFILES, name)) throw new RangeError('Unknown interpreter profile.');
+    this.quirks = Object.assign({}, Chip8.PROFILES[name]);
+    this.waitingForKey = null; this.waitKey = null; this.releasedKey = null;
+    return this;
   };
 
   Chip8.FONTSET = FONTSET;

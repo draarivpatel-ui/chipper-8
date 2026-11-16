@@ -45,7 +45,7 @@
       id: 'pong',
       name: 'Pong',
       blurb: 'Classic solo pong. Keep the ball in play with the left paddle. ' +
-             'The ball speeds nothing up, but every successful return adds to ' +
+             'Every successful paddle return adds to ' +
              'your score in V7. Missing the ball simply serves a new one.',
       controls: '2 = paddle up, 8 = paddle down',
       keys: { '2': 'Paddle up', '8': 'Paddle down' },
@@ -129,6 +129,8 @@ checkLow:
 catch:
     LD V2, 1
     ADD V7, 1
+    LD VA, 3
+    LD ST, VA
     ADD V0, 1
     JP xDone
 miss:
@@ -234,7 +236,7 @@ checkCatch:
     JP respawn
 checkRight:
     LD V5, V2
-    ADD V5, 8
+    ADD V5, 7
     LD V8, V5
     SUB V8, V0
     SE VF, 0
@@ -242,6 +244,8 @@ checkRight:
     JP respawn
 caught:
     ADD V7, 1
+    LD VA, 3
+    LD ST, VA
 respawn:
     LD V1, 0
     RND V0, 63
@@ -322,6 +326,8 @@ noRight:
     SNE VF, 0
     JP loop
     ADD V7, 1
+    LD VA, 3
+    LD ST, VA
     RND V2, 55
     RND V3, 27
     JP loop
@@ -396,7 +402,7 @@ bulletActive:
     JP bulletMove
 bxHigh:
     LD V8, V2
-    ADD V8, 8
+    ADD V8, 7
     LD V9, V8
     SUB V9, V4
     SE VF, 0
@@ -410,7 +416,7 @@ byLow:
     JP bulletMove
 byHigh:
     LD V8, V3
-    ADD V8, 4
+    ADD V8, 3
     LD V9, V8
     SUB V9, V5
     SE VF, 0
@@ -418,6 +424,8 @@ byHigh:
     JP bulletMove
 hit:
     ADD V7, 1
+    LD VA, 3
+    LD ST, VA
     LD V5, 255
     RND V2, 55
     LD V3, 2
@@ -450,7 +458,7 @@ draw:
     LD I, ship
     DRW V0, V1, 1
     LD V8, 255
-    SE V5, V8
+    SNE V5, V8
     JP noBulletDraw
     LD I, bullet
     DRW V4, V5, 1

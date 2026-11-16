@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk DIP panel, and cycle-accurate bus trace analyzer.">
+  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk DIP panel, and instruction debugger with independent timers.">
   <title>CHIPPER-8 // COSMAC VIP Logic Analyzer &amp; Virtual Machine</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <a class="skip-link" href="#workbench">Skip to workbench</a>
   <div class="bench">
     <header class="bench-header">
       <div class="header-id">
@@ -33,7 +34,12 @@
       </div>
     </header>
 
-    <main class="bench-grid">
+    <section class="workbench-intro" aria-labelledby="intro-title">
+      <div><p class="eyebrow">VIRTUAL MACHINE / ASSEMBLER / DEBUGGER</p><h2 id="intro-title">See every bit of the machine.</h2><p>Play an original cartridge, trace an instruction, or write your own ROM. Everything runs here.</p></div>
+      <div class="showcase-actions"><button id="showcaseXor" class="hw-btn hw-btn-primary" type="button">SHOW XOR COLLISION</button><button id="showcaseQuirks" class="hw-btn" type="button">COMPARE INTERPRETERS</button></div>
+    </section>
+    <section class="verification-strip" aria-label="Machine verification"><strong id="verificationBadge">Checking instruction round trips</strong><span id="quirkComparison">Run a showcase to inspect the machine.</span></section>
+    <main id="workbench" class="bench-grid" tabindex="-1">
       <!-- Column 1: ROM Bank + Hex Keypad -->
       <aside class="module col-left">
         <section class="module-block">
@@ -42,7 +48,7 @@
             <span class="module-meta">ORIGIN 0x200</span>
           </div>
           <p class="module-note">Select an assembly listing to assemble and load into RAM at 0x200.</p>
-          <div id="romList" class="rom-list" role="listbox" aria-label="Built-in ROM cartridges"></div>
+          <div id="romList" class="rom-list" role="group" aria-label="Built-in ROM cartridges"></div>
         </section>
 
         <section class="module-block">
@@ -73,9 +79,9 @@
               <span>X:00</span><span>X:16</span><span>X:32</span><span>X:48</span><span>X:63</span>
             </div>
             <div class="crt-frame">
-              <canvas id="screen" width="640" height="320" role="img" aria-label="CHIP-8 64 by 32 monochrome pixel display"></canvas>
+              <canvas id="screen" width="640" height="320" tabindex="0" role="img" aria-label="CHIP-8 64 by 32 monochrome pixel display"></canvas>
               <div id="screenOverlay" class="screen-overlay">
-                <p>HALTED AT PC=0x200 // PRESS RUN OR STEP</p>
+                <p>READY // PRESS RUN OR STEP</p>
               </div>
             </div>
             <div class="crt-rulers-bot" aria-hidden="true">
@@ -83,6 +89,7 @@
               <span>VF = COLLISION LATCH</span>
             </div>
           </div>
+          <output id="pixelReadout" class="pixel-readout" aria-live="polite">Inspect a pixel with the pointer or focus the display and use arrow keys.</output>
         </div>
 
         <div class="transport-strip">
@@ -98,10 +105,11 @@
           </div>
         </div>
 
+        <div class="debug-control-row"><label for="profileSelect">INTERPRETER <select id="profileSelect"><option value="modern">Modern / wrapping display</option><option value="vip">COSMAC VIP conventions</option><option value="chip48">CHIP-48 conventions</option></select></label><label for="breakpointInput">BREAK AT PC <input id="breakpointInput" placeholder="0x220" maxlength="5" inputmode="text" aria-describedby="breakpointStatus"></label><button id="breakpointBtn" class="hw-btn" type="button">SET BREAKPOINT</button><output id="breakpointStatus" aria-live="polite">No breakpoint</output><button id="timerStepBtn" class="hw-btn" type="button">TICK 1/60 s</button></div>
         <div class="dip-panel">
           <div class="dip-header">
             <span>HARDWARE DIP SWITCHES &amp; INTERPRETER QUIRKS</span>
-            <span class="dip-sub">DEFAULT: 1977 RCA COSMAC VIP</span>
+            <span class="dip-sub">PROFILE + THREE OVERRIDES</span>
           </div>
           <div class="dip-grid">
             <label class="dip-switch" title="When OFF (COSMAC VIP), FX55 and FX65 advance I by X+1. When ON (CHIP-48), I stays unchanged.">
@@ -177,14 +185,14 @@
 
         <section class="module-block">
           <div class="module-bar">
-            <h2>04 // CYCLE-ACCURATE BUS TRACE</h2>
+            <h2>04 // INSTRUCTION TRACE</h2>
             <span class="module-meta">LIVE OPCODE STREAM</span>
           </div>
           <div class="trace-table-wrap">
             <table class="trace-table" aria-label="Executed instruction trace">
               <thead>
                 <tr>
-                  <th>CYC</th>
+                  <th>STEP</th>
                   <th>PC</th>
                   <th>WORD</th>
                   <th>MNEMONIC</th>
@@ -193,7 +201,7 @@
                 </tr>
               </thead>
               <tbody id="busTraceBody">
-                <tr><td colspan="6" class="trace-empty">Step or run CPU to capture bus trace.</td></tr>
+                <tr><td colspan="6" class="trace-empty">Step or run CPU to capture instruction trace.</td></tr>
               </tbody>
             </table>
           </div>
@@ -203,17 +211,21 @@
 
         <section class="module-block source-block">
           <div class="module-bar">
-            <h2>05 // TWO-PASS ASSEMBLER SOURCE</h2>
+            <h2>05 // ASSEMBLER WORKSPACE</h2>
             <span class="module-meta" id="sourceTag">0 BYTES</span>
           </div>
-          <pre class="source-code" id="sourceCode"><code>Select a cartridge to inspect source assembly.</code></pre>
+          <details><summary>Read the active cartridge</summary><pre class="source-code" id="sourceCode"><code>Select a cartridge to inspect source assembly.</code></pre></details>
+          <label for="assemblyEditor" class="editor-label">EDIT SOURCE / ASSEMBLE / RUN</label>
+          <textarea id="assemblyEditor" class="assembly-editor" spellcheck="false" aria-describedby="assemblerStatus"></textarea>
+          <div class="editor-actions"><button id="assembleBtn" class="hw-btn hw-btn-primary" type="button">ASSEMBLE + LOAD</button><button id="downloadRomBtn" class="hw-btn" type="button">EXPORT .ch8</button></div>
+          <output id="assemblerStatus" class="assembler-status" aria-live="polite">Assembly errors include line numbers.</output>
         </section>
       </aside>
     </main>
 
     <footer class="bench-footer">
-      <span>MODULES: <code>engine.js</code> (CPU + Disassembler) / <code>assembler.js</code> (2-Pass Label Resolver) / <code>roms.js</code> (4 Assembly Cartridges)</span>
-      <span>63/63 NODE UNIT TESTS PASSING // ZERO EXTERNAL DEPENDENCIES // OFFLINE READY</span>
+      <span>ENGINE: <code>engine.js</code> (CPU + Disassembler) / <code>assembler.js</code> (2-Pass Label Resolver) / <code>roms.js</code> (4 Original Cartridges)</span>
+      <span>NO BUILD STEP // INDEPENDENT 60 HZ TIMERS // OFFLINE READY</span>
     </footer>
   </div>
 
@@ -222,6 +234,7 @@
   <script src="engine.js"></script>
   <script src="assembler.js"></script>
   <script src="roms.js"></script>
+  <script src="clock.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

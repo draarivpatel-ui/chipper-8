@@ -1,12 +1,12 @@
 /*
  * Chipper-8: browser hardware logic analyzer & front panel.
  *
- * Glues engine.js + assembler.js + roms.js into a cycle-accurate workbench:
+ * Glues engine.js + assembler.js + roms.js into a instruction workbench:
  *   - requestAnimationFrame run loop with adjustable opcode clock (60..2000 Hz)
  *     and 60 Hz delay/sound timers
  *   - 64x32 CDP1861 PIXIE framebuffer rendered on an HTML5 canvas
- *   - Hardware DIP switches for COSMAC VIP vs CHIP-48 / SUPER-CHIP quirks
- *   - Cycle-accurate bus trace table & live 16-byte RAM window around PC
+ *   - Hardware DIP switches for COSMAC VIP vs CHIP-48 quirks
+ *   - Instruction trace table & live 16-byte RAM window around PC
  *   - Optional 440 Hz square wave buzzer that stays strictly muted on load
  *
  * Zero dependencies, zero network calls, zero autoplaying audio.
@@ -90,16 +90,19 @@
   ];
 
   var HEX = '0123456789ABCDEF';
-  var PIXEL_SCALE = canvas.width / C8.Chip8.DISPLAY_WIDTH; // 10
+  var PIXEL_SCALE = canvas.width / C8.Chip8.DISPLAY_WIDTH;
 
   // ---------------------------------------------------------------- State
   var cpu = new C8.Chip8();
   var activeRom = null;
+  var clock = new C8.Clock();
+  var breakpoint = null, skipBreakpoint = false, stoppedAtBreakpoint = false;
+  var keyboardKeys = Object.create(null);
+  var virtualKeys = Object.create(null);
+  var inspectionPixel = { x: 0, y: 0 };
   var running = false;
   var rafId = 0;
   var speed = 600;                 // opcodes per second
-  var cycleAcc = 0;
-  var timerAcc = 0;
   var lastTime = 0;
   var opCount = 0;
   var frameCount = 0;
@@ -111,6 +114,18 @@
   var traceBuffer = [];
   var MAX_TRACE = 7;
   var colors = { bg: '#100b03', pixel: '#ffb000', glow: 'rgba(255,176,0,0.55)' };
+
+  function isKeyHeld(value) {
+    return !!(keyboardKeys[value] || pointerKeys[value] || virtualKeys[value]);
+  }
+
+  function refreshPixelReadout() {
+    var readout = $('pixelReadout');
+    if (!readout) { return; }
+    readout.textContent = 'PIXEL [' + inspectionPixel.x + ', ' + inspectionPixel.y + '] = ' +
+      cpu.getPixel(inspectionPixel.x, inspectionPixel.y) + ' / VRAM OFFSET ' +
+      hex3(inspectionPixel.y * C8.Chip8.DISPLAY_WIDTH + inspectionPixel.x);
+  }
 
   // ---------------------------------------------------------------- Colors
   function refreshColors() {
@@ -125,7 +140,14 @@
   }
 
   // ---------------------------------------------------------------- Render
+  function fitScreen() {
+    var width = canvas.getBoundingClientRect().width || 640;
+    var pixelScale = Math.max(1, Math.round(width * (window.devicePixelRatio || 1) / 64));
+    if (canvas.width !== pixelScale * 64) { canvas.width = pixelScale * 64; canvas.height = pixelScale * 32; }
+    PIXEL_SCALE = pixelScale; ctx.imageSmoothingEnabled = false;
+  }
   function render() {
+    fitScreen();
     ctx.fillStyle = colors.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -146,6 +168,7 @@
     }
     ctx.fill();
     ctx.shadowBlur = 0;
+    refreshPixelReadout();
   }
 
   // ---------------------------------------------------------------- Audio
@@ -198,11 +221,9 @@
     var noIncI = !!(quirkLoadStore && quirkLoadStore.checked);
     var shiftVy = !!(quirkShiftVy && quirkShiftVy.checked);
     var jumpVx = !!(quirkJumpVx && quirkJumpVx.checked);
-    cpu.quirks = {
-      loadStoreNoIncrementI: noIncI,
-      shiftUsesVy: shiftVy,
-      jumpUsesVx: jumpVx
-    };
+    cpu.quirks.loadStoreNoIncrementI = noIncI;
+    cpu.quirks.shiftUsesVy = shiftVy;
+    cpu.quirks.jumpUsesVx = jumpVx;
     if (quirkLoadStoreLabel) {
       quirkLoadStoreLabel.textContent = noIncI ? 'CHIP-48: I UNCHANGED' : 'VIP: I = I + X + 1';
     }
@@ -279,8 +300,11 @@
   function hex2(v) { return (v & 0xFF).toString(16).toUpperCase().padStart(2, '0'); }
 
   function executeAndRecordStep() {
+    if (cpu.halted) return cpu.lastOpcode;
+    var countBefore = cpu.instructionsExecuted;
     var pcBefore = cpu.pc;
     var op = cpu.step();
+    if (cpu.instructionsExecuted === countBefore) return op;
     opCount++;
     traceBuffer.push({
       cyc: opCount,
@@ -299,7 +323,7 @@
   function renderBusTrace() {
     if (!busTraceBody) { return; }
     if (traceBuffer.length === 0) {
-      busTraceBody.innerHTML = '<tr><td colspan="6" class="trace-empty">Step or run CPU to capture bus trace.</td></tr>';
+      busTraceBody.innerHTML = '<tr><td colspan="6" class="trace-empty">Step or run CPU to capture instruction trace.</td></tr>';
       return;
     }
     var rowsHtml = '';
@@ -349,8 +373,10 @@
     stateCells.op.textContent = cpu.lastOpcode
       ? cpu.disassemble(cpu.lastOpcode) : '-';
     for (var i = 0; i < 16; i++) {
+      regCells[i].classList.toggle('changed', regCells[i].textContent !== hex2(cpu.V[i]));
       regCells[i].textContent = hex2(cpu.V[i]);
     }
+    if (cpu.waitingForKey !== null && running) setStatus('WAITING FOR KEY', 'running');
     renderBusTrace();
     renderRamWindow();
     updateStats();
@@ -403,7 +429,7 @@
       var card = document.createElement('button');
       card.type = 'button';
       card.className = 'rom-card';
-      card.setAttribute('role', 'option');
+      card.setAttribute('aria-pressed', 'false');
       card.dataset.index = String(idx);
       card.innerHTML =
         '<div class="rom-card-head"><span class="rom-card-name"></span>' +
@@ -424,7 +450,7 @@
     for (var i = 0; i < cards.length; i++) {
       var on = i === index;
       cards[i].classList.toggle('active', on);
-      cards[i].setAttribute('aria-selected', on ? 'true' : 'false');
+      cards[i].setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
 
@@ -447,18 +473,36 @@
   function buildKeypad() {
     keypadEl.innerHTML = '';
     PAD_ORDER.forEach(function (value) {
-      var key = document.createElement('div');
+      var key = document.createElement('button');
+      key.type = 'button';
       key.className = 'key';
       key.dataset.value = String(value);
       key.setAttribute('role', 'button');
-      key.setAttribute('tabindex', '-1');
+      key.setAttribute('tabindex', '0');
       key.setAttribute('aria-label', 'CHIP-8 key ' + HEX[value]);
       key.innerHTML = '<div>' + HEX[value] +
         '<span class="key-sub">' + (PHYSICAL[value] || '') + '</span></div>';
+      key.setAttribute('aria-pressed', 'false');
+      key.addEventListener('keydown', function (event) {
+        if (event.key === ' ' || event.key === 'Enter') {
+          event.preventDefault(); event.stopPropagation();
+          if (!event.repeat) { virtualKeys[value] = true; syncKey(value); }
+        }
+      });
+      key.addEventListener('keyup', function (event) {
+        if (event.key === ' ' || event.key === 'Enter') {
+          event.preventDefault(); event.stopPropagation();
+          delete virtualKeys[value]; syncKey(value);
+        }
+      });
+      key.addEventListener('blur', function () {
+        if (virtualKeys[value]) { delete virtualKeys[value]; syncKey(value); }
+      });
       key.addEventListener('pointerdown', function (e) {
         e.preventDefault();
-        pressKey(value, true);
         pointerKeys[value] = true;
+        syncKey(value);
+        if (key.setPointerCapture && eventPointerId(e)) key.setPointerCapture(e.pointerId);
       });
       key.addEventListener('pointerup', function () { releasePointerKey(value); });
       key.addEventListener('pointerleave', function () { releasePointerKey(value); });
@@ -468,10 +512,11 @@
     });
   }
 
+  function eventPointerId(event) { return Number.isInteger(event.pointerId); }
   function releasePointerKey(value) {
     if (pointerKeys[value]) {
       delete pointerKeys[value];
-      pressKey(value, false);
+      syncKey(value);
     }
   }
 
@@ -479,10 +524,14 @@
     Object.keys(pointerKeys).forEach(function (v) { releasePointerKey(Number(v)); });
   }
 
+  function syncKey(value) {
+    pressKey(value, isKeyHeld(value));
+  }
+
   function pressKey(value, down) {
     cpu.setKey(value, down);
     var el = keyEls[value];
-    if (el) { el.classList.toggle('down', !!down); }
+    if (el) { el.classList.toggle('down', !!down); el.setAttribute('aria-pressed', down ? 'true' : 'false'); }
   }
 
   // ---------------------------------------------------------------- Run loop
@@ -492,26 +541,15 @@
     if (dt < 0) { dt = 0; }
     lastTime = now;
 
-    cycleAcc += dt * speed;
-    timerAcc += dt * 60;
-
-    var steps = Math.min(Math.floor(cycleAcc), 4000);
-    cycleAcc -= steps;
-    for (var i = 0; i < steps; i++) {
-      executeAndRecordStep();
-      if (cpu.halted) {
-        running = false;
-        setButtons();
-        setStatus('HALTED', '');
-        updateSound();
-        toast('CPU halted on unknown opcode. Reset to 0x200 to continue.');
-        break;
+    clock.advance(dt, speed, function () {
+      if (breakpoint !== null && cpu.pc === breakpoint && !skipBreakpoint) {
+        stoppedAtBreakpoint = true; running = false; setButtons(); setStatus('BREAKPOINT ' + hex3(cpu.pc), 'paused'); return false;
       }
-    }
-
-    var ticks = Math.min(Math.floor(timerAcc), 30);
-    timerAcc -= ticks;
-    for (var t = 0; t < ticks; t++) { cpu.tickTimers(); }
+      skipBreakpoint = false;
+      executeAndRecordStep();
+      if (cpu.halted) { running = false; setButtons(); setStatus('FAULT', 'paused'); toast(cpu.error || 'CPU halted.'); return false; }
+      return true;
+    }, function () { cpu.tickTimers(); });
 
     updateSound();
 
@@ -531,10 +569,10 @@
   function play() {
     if (running) { return; }
     if (!activeRom) { return; }
-    if (cpu.halted) { loadRom(ROMS.indexOf(activeRom), false); }
+    if (cpu.halted) { loadDescriptor(activeRom, false); }
     running = true;
-    cycleAcc = 0;
-    timerAcc = 0;
+    skipBreakpoint = stoppedAtBreakpoint && breakpoint !== null && cpu.pc === breakpoint;
+    stoppedAtBreakpoint = false;
     lastTime = performance.now();
     lastInspector = 0;
     setButtons();
@@ -549,7 +587,7 @@
     running = false;
     cancelAnimationFrame(rafId);
     setButtons();
-    setStatus('HALTED', 'paused');
+    setStatus('PAUSED', 'paused');
     updateSound();
     updateInspector();
   }
@@ -557,7 +595,6 @@
   function stepOnce() {
     if (running) { pause(); }
     executeAndRecordStep();
-    cpu.tickTimers();
     if (cpu.drawFlag) {
       render();
       cpu.drawFlag = false;
@@ -572,30 +609,22 @@
     pause();
     releaseAllPointerKeys();
     for (var k = 0; k < 16; k++) { cpu.setKey(k, false); }
-    loadRom(ROMS.indexOf(activeRom), false);
+    var current = activeRom; loadDescriptor(current, false);
     toast('CPU reset to 0x200.');
-  }
-
-  function stepInitialFrame() {
-    // Advance through initial register setup and first sprite DRW ops so the
-    // 64x32 display shows the live game layout immediately on cartridge load.
-    var draws = 0;
-    for (var s = 0; s < 24 && !cpu.halted; s++) {
-      var op = executeAndRecordStep();
-      if ((op & 0xF000) === 0xD000) { draws++; }
-      if (draws >= 2) { break; }
-    }
-    if (cpu.drawFlag) {
-      render();
-      cpu.drawFlag = false;
-      frameCount = 1;
-    }
   }
 
   function loadRom(index, autoplay) {
     if (index < 0 || index >= ROMS.length) { return; }
-    var rom = ROMS[index];
-    releaseAllPointerKeys();
+    loadDescriptor(ROMS[index], autoplay);
+  }
+
+  function loadDescriptor(rom, autoplay) {
+    if (!rom) return;
+    if (!rom.bytes || !rom.bytes.length) {
+      throw new RangeError('Assembly produced 0 bytes. Active cartridge and CPU state preserved.');
+    }
+    var index = ROMS.indexOf(rom);
+    releaseAllKeys();
     for (var k = 0; k < 16; k++) { cpu.setKey(k, false); }
 
     cpu.reset();
@@ -606,23 +635,25 @@
     activeRom = rom;
     opCount = 0;
     frameCount = 0;
-    cycleAcc = 0;
-    timerAcc = 0;
     traceBuffer = [];
     running = false;
     cancelAnimationFrame(rafId);
 
-    stepInitialFrame();
+    clock.reset(); stoppedAtBreakpoint = false;
+    updateSound();
 
     markActiveRom(index);
     buildKeyLegend(rom);
     setSource(rom);
+    $('assemblyEditor').value = rom.source.trim();
+    $('assemblerStatus').textContent = rom.bytes.length + ' bytes loaded. PC begins at 0x200.';
     romControlsEl.textContent = 'CARTRIDGE INPUTS: ' + rom.controls;
     activeRomName.textContent = rom.name.toUpperCase() + ' (' + rom.bytes.length + ' B)';
     render();
     updateInspector();
     setButtons();
     setStatus('READY', '');
+    screenOverlay.querySelector('p').textContent = 'READY AT PC=' + hex3(cpu.pc) + ' // PRESS RUN OR STEP';
     screenOverlay.classList.remove('hidden');
 
     if (autoplay) { play(); }
@@ -653,34 +684,44 @@
   }
 
   // ---------------------------------------------------------------- Events
-  function isTypingTarget(el) {
+  function isTextEditableTarget(el) {
     if (!el) { return false; }
     var tag = el.tagName;
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
   }
 
+  function isActivationButton(el) {
+    if (!el) { return false; }
+    var tag = el.tagName;
+    return tag === 'BUTTON' || tag === 'A';
+  }
+
   function onKeyDown(e) {
-    if (isTypingTarget(e.target)) { return; }
+    if (isTextEditableTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) { return; }
     var key = e.key.toLowerCase();
     if (key === ' ' || key === 'spacebar') {
+      if (isActivationButton(e.target)) { return; }
       e.preventDefault();
-      running ? pause() : play();
+      if (!e.repeat) running ? pause() : play();
       return;
     }
     if (Object.prototype.hasOwnProperty.call(KEY_MAP, key)) {
       e.preventDefault();
-      if (!e.repeat) { pressKey(KEY_MAP[key], true); }
+      if (!e.repeat) { keyboardKeys[KEY_MAP[key]] = true; syncKey(KEY_MAP[key]); }
     }
   }
 
   function onKeyUp(e) {
     var key = e.key.toLowerCase();
     if (Object.prototype.hasOwnProperty.call(KEY_MAP, key)) {
-      if (!pointerKeys[KEY_MAP[key]]) { pressKey(KEY_MAP[key], false); }
+      delete keyboardKeys[KEY_MAP[key]];
+      syncKey(KEY_MAP[key]);
     }
   }
 
   function releaseAllKeys() {
+    keyboardKeys = Object.create(null);
+    virtualKeys = Object.create(null);
     releaseAllPointerKeys();
     for (var k = 0; k < 16; k++) { pressKey(k, false); }
   }
@@ -692,7 +733,7 @@
     resetBtn.addEventListener('click', resetMachine);
 
     speedRange.addEventListener('input', function () {
-      speed = Number(speedRange.value);
+      speed = Math.max(60, Math.min(2000, Number(speedRange.value) || 600));
       speedValue.textContent = fmt(speed) + ' Hz';
     });
 
@@ -723,8 +764,94 @@
 
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', releaseAllKeys);
+    window.addEventListener('blur', function () { releaseAllKeys(); pause(); });
+    document.addEventListener('visibilitychange', function () { if (document.hidden) { releaseAllKeys(); pause(); } });
+    window.addEventListener('resize', render);
+    if (window.ResizeObserver) new window.ResizeObserver(render).observe(canvas);
     document.addEventListener('pointerup', function () { releaseAllPointerKeys(); });
+    document.addEventListener('pointercancel', releaseAllPointerKeys);
+    bindWorkbench();
+  }
+
+  var XOR_SOURCE = [
+    '; XOR twice: V2 records no collision, V7 records the erase collision.',
+    'start: CLS', 'LD V0, 28', 'LD V1, 12', 'LD I, sprite', 'DRW V0, V1, 5', 'LD V2, VF',
+    'LD V3, 30', 'LD DT, V3', 'firstWait: LD V3, DT', 'SE V3, 0', 'JP firstWait',
+    'DRW V0, V1, 5', 'LD V7, VF', 'LD V3, 30', 'LD DT, V3', 'LD ST, V3',
+    'secondWait: LD V3, DT', 'SE V3, 0', 'JP secondWait', 'JP start',
+    'sprite: DB 0xF0, 0x90, 0x90, 0x90, 0xF0'
+  ].join('\n');
+  function descriptor(source, name) {
+    return { id: 'custom', name: name, source: source, bytes: C8.assemble(source), controls: 'Custom assembly', keys: {} };
+  }
+  function runVerification() {
+    var words = [0x00E0, 0x00EE, 0x0123, 0x1234, 0x2234, 0x3123, 0x4123, 0x5120,
+      0x6123, 0x7123, 0x8120, 0x8121, 0x8122, 0x8123, 0x8124, 0x8125, 0x8126, 0x8127,
+      0x812E, 0x9120, 0xA234, 0xB234, 0xC123, 0xD125, 0xE19E, 0xE1A1, 0xF107,
+      0xF10A, 0xF115, 0xF118, 0xF11E, 0xF129, 0xF133, 0xF155, 0xF165];
+    try {
+      words.forEach(function (word) {
+        var bytes = C8.assemble(cpu.disassemble(word));
+        if (((bytes[0] << 8) | bytes[1]) !== word) throw new Error('Instruction round trip failed.');
+      });
+      $('verificationBadge').textContent = words.length + ' instruction round trips passed';
+    } catch (error) { $('verificationBadge').textContent = error.message; }
+  }
+  function inspectPixel(x, y) {
+    inspectionPixel.x = Math.max(0, Math.min(63, x)); inspectionPixel.y = Math.max(0, Math.min(31, y));
+    refreshPixelReadout();
+  }
+  function bindWorkbench() {
+    $('showcaseXor').addEventListener('click', function () {
+      loadDescriptor(descriptor(XOR_SOURCE, 'XOR collision lab'), true);
+      $('quirkComparison').textContent = 'Watch V2 = 0 on draw, V7 = 1 on erase. The 60 Hz delay timer paces both phases.';
+    });
+    $('showcaseQuirks').addEventListener('click', function () {
+      var results = [];
+      ['modern', 'vip', 'chip48'].forEach(function (name) {
+        var machine = new C8.Chip8().setProfile(name); machine.load([0x61, 9, 0x62, 6, 0x81, 0x26]);
+        machine.step(); machine.step(); machine.step();
+        results.push(name.toUpperCase() + ': V1=' + machine.V[1] + ', VF=' + machine.V[15]);
+      });
+      $('quirkComparison').textContent = '8126 with V1=9, V2=6 / ' + results.join(' / ');
+    });
+    $('profileSelect').addEventListener('change', function () {
+      pause(); releaseAllKeys(); cpu.setProfile(this.value);
+      quirkLoadStore.checked = cpu.quirks.loadStoreNoIncrementI; quirkShiftVy.checked = cpu.quirks.shiftUsesVy; quirkJumpVx.checked = cpu.quirks.jumpUsesVx;
+      syncQuirksFromUI(); updateInspector();
+      $('quirkComparison').textContent = this.value.toUpperCase() + ': ' + (cpu.quirks.clipSprites ? 'sprites clip' : 'sprites wrap') + ', ' + (cpu.quirks.logicResetsVf ? 'logic clears VF' : 'logic retains VF') + ', ' + (cpu.quirks.waitForRelease ? 'key release completes FX0A' : 'held key completes FX0A') + '.';
+    });
+    $('breakpointBtn').addEventListener('click', function () {
+      var value = $('breakpointInput').value.trim();
+      if (!value) { breakpoint = null; $('breakpointStatus').textContent = 'No breakpoint'; return; }
+      if (!/^(?:0x)?[0-9a-f]{1,3}$/i.test(value) || parseInt(value.replace(/^0x/i, ''), 16) > 0xFFE) {
+        $('breakpointStatus').textContent = 'Enter a hexadecimal address from 000 to FFE.'; return;
+      }
+      breakpoint = parseInt(value.replace(/^0x/i, ''), 16); skipBreakpoint = false;
+      $('breakpointStatus').textContent = 'Break before ' + hex3(breakpoint) + '. Clear the field to remove.';
+    });
+    $('timerStepBtn').addEventListener('click', function () { pause(); cpu.tickTimers(); updateInspector(); updateSound(); });
+    $('assembleBtn').addEventListener('click', function () {
+      try {
+        var source = $('assemblyEditor').value, rom = descriptor(source, 'Custom ROM');
+        loadDescriptor(rom, false); $('assemblerStatus').textContent = 'Assembled ' + rom.bytes.length + ' bytes. Ready at 0x200.';
+      } catch (error) { $('assemblerStatus').textContent = error.message; }
+    });
+    $('downloadRomBtn').addEventListener('click', function () {
+      if (!activeRom) return;
+      var url = URL.createObjectURL(new Blob([activeRom.bytes], { type: 'application/octet-stream' }));
+      var link = document.createElement('a'); link.href = url; link.download = 'chipper8-rom.ch8';
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0); toast('Exported ' + activeRom.bytes.length + ' ROM bytes.');
+    });
+    canvas.addEventListener('pointermove', function (event) {
+      var rect = canvas.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) inspectPixel(Math.floor((event.clientX - rect.left) / rect.width * 64), Math.floor((event.clientY - rect.top) / rect.height * 32));
+    });
+    canvas.addEventListener('keydown', function (event) {
+      var deltas = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }, delta = deltas[event.key];
+      if (!delta) return; event.preventDefault(); inspectPixel(inspectionPixel.x + delta[0], inspectionPixel.y + delta[1]);
+    });
   }
 
   // ---------------------------------------------------------------- Init
@@ -744,4 +871,5 @@
   }
 
   init();
+  runVerification();
 })();
