@@ -47,7 +47,7 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 ## Running the Test Suite
 
 ```sh
-node --test tests/
+node --test
 ```
 
 All 116 tests across `tests/` (engine, assembler, content, regression, and DOM suites) run using Node's built-in test runner with zero external packages.
