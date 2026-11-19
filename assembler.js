@@ -91,7 +91,7 @@
     var o0 = ops[0], o1 = ops[1], o2 = ops[2];
     var u0 = o0 !== undefined ? o0.toUpperCase() : '';
     var u1 = o1 !== undefined ? o1.toUpperCase() : '';
-    var x, y, kk, nnn, n;
+    var x, y, n;
     var counts = { CLS: [0], RET: [0], SYS: [1], JP: [1, 2], CALL: [1], JPV0: [1],
       SE: [2], SNE: [2], LD: [2], ADD: [2], OR: [2], AND: [2], XOR: [2], SUB: [2], SUBN: [2],
       SHR: [1, 2], SHL: [1, 2], RND: [2], DRW: [3], SKP: [1], SKNP: [1] };
