@@ -31,7 +31,7 @@ Chipper-8 runs a complete 35-instruction CHIP-8 virtual machine, a two-pass symb
 
 ## Verification
 
-- **288 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression and DOM workbench suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
+- **296 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression and DOM workbench suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
 - **Determinism proven by test**: identical ROM + seed + quirks produce byte-identical trace JSON and equal canonical state hashes; snapshot -> restore -> snapshot round trips preserve the exact FNV-1a hash.
 - Exhaustive **65,536-word** (`0x0000..0xFFFF`) disassemble -> assemble round-trip verification passes with zero mismatches.
 - Startup self-test verifies **35 instruction round trips** directly inside the booted workbench.

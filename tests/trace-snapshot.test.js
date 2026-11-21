@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const Chip8 = require('../engine.js');
 const { assemble } = require('../assembler.js');
 const { list: roms } = require('../roms.js');
+// Authored by the pre-traceCyclePhase engine: version 2, no cycle-phase
+// field, digest over the frozen v2 canonical serialization.
+const V2_SNAPSHOT = require('./fixtures/snapshot-v2.json');
 
 function machine(words, configure) {
   const bytes = [];
@@ -98,7 +101,7 @@ test('snapshotState exposes the canonical fields and formats', () => {
   c.step();
   const s = c.snapshotState();
   assert.equal(s.format, 'chipper8-snapshot');
-  assert.equal(s.version, 2);
+  assert.equal(s.version, 3);
   assert.equal(s.hashAlgorithm, 'fnv1a-32');
   assert.equal(s.stateHash, c.stateHash());
   assert.equal(s.v.length, 16);
@@ -409,4 +412,73 @@ test('the timer cycle phase participates in the canonical state hash', () => {
   const a = machine([0x6001]); a.traceCyclePhase = 3;
   const b = machine([0x6001]); b.traceCyclePhase = 4;
   assert.notEqual(a.stateHash(), b.stateHash());
+});
+
+test('restoreState accepts a version 2 snapshot and resumes the timer phase at 0', () => {
+  const snap = JSON.parse(JSON.stringify(V2_SNAPSHOT));
+  assert.equal(snap.version, 2);
+  assert.equal(Object.prototype.hasOwnProperty.call(snap, 'traceCyclePhase'), false);
+  const d = new Chip8();
+  d.restoreState(snap);
+  assert.equal(d.traceCyclePhase, 0);
+  assert.equal(d.V[0], 1);
+  assert.equal(d.V[1], 1);
+  assert.equal(d.V[2], 0x42);
+  assert.equal(d.delayTimer, 5);
+  assert.equal(d.soundTimer, 2);
+  assert.equal(d.pc, 0x202);
+  assert.equal(d.instructionsExecuted, 7);
+  assert.equal(d.diagnostics.length, 1);
+  assert.equal(d.diagnosticCounts.SYS_NOP, 1);
+  assert.equal(d.rng.rngSeed, 99);
+  assert.equal(d.rng.rngState, 1831565912);
+});
+
+test('restoreState rejects a tampered version 2 snapshot and leaves the receiver untouched', () => {
+  const receiver = machine([0x60, 0x77]);
+  const before = receiver.exportState();
+  const tampers = [
+    (s) => { s.v[0] = 0xEE; },          // field edit with a stale digest
+    (s) => { s.delayTimer = 300; },     // out-of-range field on the v2 path
+    (s) => {                            // well-formed but wrong digest nibble
+      s.stateHash = (s.stateHash.slice(0, 7) + (s.stateHash[7] === '0' ? '1' : '0'));
+    }
+  ];
+  for (const tamper of tampers) {
+    const snap = JSON.parse(JSON.stringify(V2_SNAPSHOT));
+    tamper(snap);
+    assert.throws(() => receiver.restoreState(snap), RangeError, tamper.toString());
+    assert.equal(receiver.exportState(), before, tamper.toString());
+  }
+});
+
+test('restoreState rejects a tampered version 3 snapshot and leaves the receiver untouched', () => {
+  const src = machine([0x6001, 0x6102]);
+  src.step();
+  const snap = JSON.parse(src.exportState());
+  assert.equal(snap.version, 3);
+  const receiver = machine([0x60, 0x77]);
+  const before = receiver.exportState();
+  const noPhase = JSON.parse(JSON.stringify(snap));
+  delete noPhase.traceCyclePhase; // v3 requires the field like any other
+  assert.throws(() => receiver.restoreState(noPhase), /traceCyclePhase/);
+  assert.equal(receiver.exportState(), before);
+  snap.v[1] = 0xEE; // field changed, embedded digest left stale
+  assert.throws(() => receiver.restoreState(snap), /hash mismatch/);
+  assert.equal(receiver.exportState(), before);
+});
+
+test('a version 3 snapshot round-trips registers, timers and the cycle phase', () => {
+  const c = machine([0x6001, 0xF015, 0x6100, 0xF107]);
+  c.trace(3, { cyclesPerTick: 2 });
+  const s = c.snapshotState();
+  assert.equal(s.version, 3);
+  assert.equal(s.traceCyclePhase, 1);
+  const d = new Chip8();
+  d.restoreState(s);
+  assert.equal(d.stateHash(), s.stateHash);
+  assert.equal(d.traceCyclePhase, 1);
+  assert.equal(d.V[0], 1);
+  assert.equal(d.V[1], 0);
+  assert.equal(d.delayTimer, 1);
 });

@@ -93,6 +93,10 @@
     // restored machine resumes the identical timer phase. reset() restarts
     // the schedule exactly like resetMachine() restarts the clock.
     this.traceCyclePhase = 0;
+    // Transient run control, never canonical state: trace() sets it around a
+    // frozen run so step() skips the 60 Hz edge accounting, then restores the
+    // previous value. It stays out of snapshots and hashes.
+    this.traceTimersFrozen = false;
 
     for (var i = 0; i < FONTSET.length; i++) {
       this.memory[i] = FONTSET[i];
@@ -242,7 +246,9 @@
     // Every non-halted step is one CPU cycle edge on the 60 Hz schedule.
     // tickTimers() parks the phase at -1 so a coincident edge's increment
     // lands back on 0; stalled FX0A fetches and faults still consume edges.
-    this.traceCyclePhase += 1;
+    // Steps inside a frozen trace are the exception: they execute without
+    // moving the timer schedule, so the flag suppresses the increment.
+    if (!this.traceTimersFrozen) { this.traceCyclePhase += 1; }
 
     if (!Number.isInteger(this.pc) || this.pc < 0 || this.pc >= MEMORY_SIZE - 1) { this.fault('Program counter is outside executable memory.', 'PC_RANGE'); return this.lastOpcode; }
     var fetchPc = this.pc;
@@ -680,6 +686,26 @@
     ].join('|');
   }
 
+  // Byte-exact copy of the canonical serialization emitted before
+  // traceCyclePhase joined the hash (snapshot format version 2). restoreState
+  // uses it only to verify the embedded digest of snapshots written by older
+  // builds; live hashing always goes through canonicalFrom above.
+  function canonicalFromV2(s) {
+    return [
+      'chipper8-v2',
+      s.pc, s.I, s.sp, s.lastOpcode, s.lastFetchPc,
+      packBytes(s.V), packWords(s.stack), packBytes(s.keys),
+      s.delayTimer, s.soundTimer,
+      s.halted ? 1 : 0, JSON.stringify(s.error), s.drawFlag ? 1 : 0,
+      s.instructionsExecuted,
+      keyOrMinus(s.waitingForKey), keyOrMinus(s.waitKey), keyOrMinus(s.releasedKey),
+      quirkBits(s.quirks),
+      s.rngKind, s.rngState, s.rngSeed === undefined ? null : s.rngSeed,
+      packBytes(s.memory), packBits(s.display),
+      packDiagnostics(s.diagnostics), packDiagnosticCounts(s.diagnosticCounts)
+    ].join('|');
+  }
+
   Chip8.prototype.canonicalState = function () {
     var rng = rngDescriptor(this.rng);
     return canonicalFrom({
@@ -706,7 +732,7 @@
     var rng = rngDescriptor(this.rng);
     return {
       format: 'chipper8-snapshot',
-      version: 2,
+      version: 3,
       hashAlgorithm: 'fnv1a-32',
       stateHash: this.stateHash(),
       pc: this.pc,
@@ -744,14 +770,19 @@
     return JSON.stringify(this.snapshotState(), null, 2);
   };
 
-  // Restore a snapshot produced by snapshotState(). Every field, the schema
-  // version, the hash algorithm and the mandatory embedded state hash are
-  // validated against a staged copy first; the live machine is only touched
-  // after the entire staged state decodes cleanly and hashes to the exact
-  // embedded digest, so a rejected restore leaves the receiver untouched.
+  // Restore a snapshot produced by snapshotState(). Versions 2 and 3 are
+  // accepted: version 2 predates traceCyclePhase in both the schema and the
+  // canonical hash, so the field is optional there (absent resumes the timer
+  // schedule at phase 0) and its digest verifies against the frozen v2
+  // serialization. Version 3 requires the field like every other canonical
+  // field. Every field, the schema version, the hash algorithm and the
+  // mandatory embedded state hash are validated against a staged copy first;
+  // the live machine is only touched after the entire staged state decodes
+  // cleanly and hashes to the exact embedded digest, so a rejected restore
+  // leaves the receiver untouched.
   Chip8.prototype.restoreState = function (snap) {
     if (!snap || typeof snap !== 'object') { throw new RangeError('Snapshot must be an object.'); }
-    if (snap.format !== 'chipper8-snapshot' || snap.version !== 2) {
+    if (snap.format !== 'chipper8-snapshot' || (snap.version !== 2 && snap.version !== 3)) {
       throw new RangeError('Unsupported snapshot format.');
     }
     if (snap.hashAlgorithm !== 'fnv1a-32') {
@@ -800,8 +831,11 @@
       delayTimer: needInt(snap.delayTimer, 0, 0xFF, 'delayTimer'),
       soundTimer: needInt(snap.soundTimer, 0, 0xFF, 'soundTimer'),
       // -1 is the legitimate parked value a just-fired tick leaves behind;
-      // the next step() edge absorbs it back to 0.
-      traceCyclePhase: needInt(snap.traceCyclePhase, -1, Number.MAX_SAFE_INTEGER, 'traceCyclePhase'),
+      // the next step() edge absorbs it back to 0. Version 2 snapshots
+      // predating the field resume the schedule at its start (phase 0); a
+      // present value is range-checked like any other field.
+      traceCyclePhase: snap.version === 2 && snap.traceCyclePhase === undefined ? 0 :
+        needInt(snap.traceCyclePhase, -1, Number.MAX_SAFE_INTEGER, 'traceCyclePhase'),
       halted: needBool(snap.halted, 'halted'),
       drawFlag: needBool(snap.drawFlag, 'drawFlag'),
       instructionsExecuted: needInt(snap.instructionsExecuted, 0, Number.MAX_SAFE_INTEGER, 'instructionsExecuted'),
@@ -882,8 +916,9 @@
     });
 
     // Verify integrity: the staged state must hash to the embedded digest
-    // before a single live field is overwritten.
-    if (fnv1a(canonicalFrom(staged)) !== snap.stateHash) {
+    // before a single live field is overwritten. Version 2 digests cover the
+    // frozen pre-traceCyclePhase serialization; version 3 covers the live one.
+    if (fnv1a(snap.version === 2 ? canonicalFromV2(staged) : canonicalFrom(staged)) !== snap.stateHash) {
       throw new RangeError('Snapshot state hash mismatch.');
     }
 
@@ -934,7 +969,8 @@
   // chunked traces, raw stepping and the live bench all continue the same
   // schedule a single call would produce. The exact mode and rate are
   // recorded in the export's timerSchedule field; frozen mode sets
-  // cyclesPerTick/cpuHz to null as an explicit CPU-only trace.
+  // cyclesPerTick/cpuHz to null as an explicit CPU-only trace whose steps
+  // consume no 60 Hz cycle edges, leaving traceCyclePhase untouched.
   Chip8.prototype.trace = function (steps, options) {
     if (!Number.isInteger(steps) || steps < 0) {
       throw new RangeError('Trace steps must be a non-negative integer.');
@@ -961,44 +997,54 @@
         (timersMode === 'timed' && this.traceCyclePhase >= cyclesPerTick)) {
       this.traceCyclePhase = 0;
     }
-    for (var i = 0; i < steps && !this.halted; i++) {
-      var pcBefore = this.pc;
-      var executedBefore = this.instructionsExecuted;
-      // Canonical schedule shared with Clock.advance: when a 60 Hz timer
-      // edge and a CPU cycle edge coincide, the timer decrement resolves
-      // before the instruction. Stalled FX0A fetches are cycle edges too,
-      // so timers keep ticking during a key wait exactly like the live
-      // bench. tickTimers() parks the phase at -1 and this edge's step()
-      // increment lands it back on 0.
-      if (timersMode === 'timed' && this.traceCyclePhase + 1 >= cyclesPerTick) {
-        this.tickTimers();
-      }
-      var op = this.step();
-      if (this.instructionsExecuted === executedBefore) {
-        if (includeStalls) {
-          // A fault (for example a PC range error) also consumes the edge
-          // without executing; mark it so it is not mistaken for a key wait.
-          var stallEntry = { stall: true, pc: pcBefore, op: op, mnemonic: this.disassembleEffective(op),
-            dt: this.delayTimer, st: this.soundTimer };
-          if (this.error) { stallEntry.fault = true; }
-          entries.push(stallEntry);
+    // Frozen traces are CPU-only: their steps must not consume 60 Hz cycle
+    // edges, or each one would shift the shared timer schedule by a phase.
+    // The flag is transient run control, never canonical state, so it stays
+    // out of snapshots and hashes; step() skips its phase increment while set.
+    var prevTimersFrozen = this.traceTimersFrozen;
+    this.traceTimersFrozen = timersMode === 'frozen';
+    try {
+      for (var i = 0; i < steps && !this.halted; i++) {
+        var pcBefore = this.pc;
+        var executedBefore = this.instructionsExecuted;
+        // Canonical schedule shared with Clock.advance: when a 60 Hz timer
+        // edge and a CPU cycle edge coincide, the timer decrement resolves
+        // before the instruction. Stalled FX0A fetches are cycle edges too,
+        // so timers keep ticking during a key wait exactly like the live
+        // bench. tickTimers() parks the phase at -1 and this edge's step()
+        // increment lands it back on 0.
+        if (timersMode === 'timed' && this.traceCyclePhase + 1 >= cyclesPerTick) {
+          this.tickTimers();
         }
-        continue;
+        var op = this.step();
+        if (this.instructionsExecuted === executedBefore) {
+          if (includeStalls) {
+            // A fault (for example a PC range error) also consumes the edge
+            // without executing; mark it so it is not mistaken for a key wait.
+            var stallEntry = { stall: true, pc: pcBefore, op: op, mnemonic: this.disassembleEffective(op),
+              dt: this.delayTimer, st: this.soundTimer };
+            if (this.error) { stallEntry.fault = true; }
+            entries.push(stallEntry);
+          }
+          continue;
+        }
+        var entry = {
+          n: this.instructionsExecuted,
+          pc: pcBefore,
+          op: op,
+          mnemonic: this.disassembleEffective(op),
+          i: this.I,
+          sp: this.sp,
+          vf: this.V[0xF],
+          dt: this.delayTimer,
+          st: this.soundTimer,
+          h: this.stateHash()
+        };
+        if ((op & 0xF000) === 0xB000) { entry.target = this.pc; }
+        entries.push(entry);
       }
-      var entry = {
-        n: this.instructionsExecuted,
-        pc: pcBefore,
-        op: op,
-        mnemonic: this.disassembleEffective(op),
-        i: this.I,
-        sp: this.sp,
-        vf: this.V[0xF],
-        dt: this.delayTimer,
-        st: this.soundTimer,
-        h: this.stateHash()
-      };
-      if ((op & 0xF000) === 0xB000) { entry.target = this.pc; }
-      entries.push(entry);
+    } finally {
+      this.traceTimersFrozen = prevTimersFrozen;
     }
     return {
       format: 'chipper8-trace',

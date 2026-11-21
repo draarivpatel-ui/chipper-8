@@ -193,3 +193,29 @@ test('faulted edges are traced as faults, not silent stalls', () => {
   const stalls = r.entries.filter(e => e.stall);
   if (stalls.length) { assert.ok(stalls[stalls.length - 1].fault === true || cpu.error === null); }
 });
+
+test('a frozen trace does not consume 60 Hz cycle edges', () => {
+  // V0=1; DT=V0; V1=0; V1=DT. If the frozen middle step still advanced the
+  // phase, the final read would land one tick early and see DT already 0.
+  const rom = [0x60, 0x01, 0xF0, 0x15, 0x61, 0x00, 0xF1, 0x07];
+  const cpu = new Chip8();
+  cpu.load(rom);
+  cpu.trace(2, { cyclesPerTick: 2 });
+  cpu.trace(1, { timers: 'frozen' });
+  cpu.trace(1, { cyclesPerTick: 2 });
+  assert.equal(cpu.V[1], 1);
+  assert.equal(cpu.traceTimersFrozen, false); // run control restored after the call
+});
+
+test('interleaved frozen traces leave the timer schedule identical to uninterrupted timed steps', () => {
+  const rom = [0x60, 0x01, 0xF0, 0x15, 0x61, 0x00, 0xF1, 0x07, 0x00, 0xE0];
+  const straight = new Chip8(); straight.load(rom);
+  straight.trace(6, { cyclesPerTick: 2 });
+  const interleaved = new Chip8(); interleaved.load(rom);
+  interleaved.trace(3, { cyclesPerTick: 2 });
+  interleaved.trace(2, { timers: 'frozen' });
+  interleaved.trace(3, { cyclesPerTick: 2 });
+  assert.equal(interleaved.traceCyclePhase, straight.traceCyclePhase);
+  assert.equal(interleaved.delayTimer, straight.delayTimer);
+  assert.equal(interleaved.soundTimer, straight.soundTimer);
+});
