@@ -215,6 +215,8 @@ test('restoreState rejects out of range field values', () => {
     (x) => { x.delayTimer = 300; },
     (x) => { x.soundTimer = 700; },
     (x) => { x.instructionsExecuted = -1; },
+    (x) => { x.traceCyclePhase = -5; },
+    (x) => { x.traceCyclePhase = 1.5; },
     (x) => { x.waitingForKey = 16; },
     (x) => { x.V = new Array(15).fill(0); },
     (x) => { x.V = new Array(16).fill(0); x.V[0] = 300; },
@@ -380,4 +382,31 @@ test('assembled source traces the same path as its byte image', () => {
   const report = Chip8.traceProgram(bytes, 3);
   assert.equal(report.entries[0].mnemonic, 'LD V0, 0x07');
   assert.equal(report.entries[1].pc, 0x202);
+});
+
+test('snapshot carries the timer cycle phase into the hash and the restore', () => {
+  // LD V0,1; LD DT,V0; LD V1,0; LD V1,DT. After three edges at two cycles
+  // per tick the phase sits mid-interval; losing it makes the restored
+  // machine read DT one 60 Hz tick early.
+  const c = machine([0x6001, 0xF015, 0x6100, 0xF107]);
+  c.trace(3, { cyclesPerTick: 2 });
+  const s = c.snapshotState();
+  assert.equal(s.traceCyclePhase, 1);
+  const d = new Chip8();
+  d.restoreState(s);
+  assert.equal(d.traceCyclePhase, 1);
+  assert.equal(d.stateHash(), s.stateHash);
+  c.trace(1, { cyclesPerTick: 2 });
+  d.trace(1, { cyclesPerTick: 2 });
+  assert.equal(d.V[1], c.V[1]);
+  assert.equal(d.V[1], 0);
+  assert.equal(d.delayTimer, c.delayTimer);
+  assert.equal(d.soundTimer, c.soundTimer);
+  assert.equal(d.stateHash(), c.stateHash());
+});
+
+test('the timer cycle phase participates in the canonical state hash', () => {
+  const a = machine([0x6001]); a.traceCyclePhase = 3;
+  const b = machine([0x6001]); b.traceCyclePhase = 4;
+  assert.notEqual(a.stateHash(), b.stateHash());
 });

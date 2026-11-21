@@ -85,10 +85,13 @@
     this.lastFetchPc = 0;
     this.diagnostics = [];
     this.diagnosticCounts = Object.create(null);
-    // Scheduling metadata, not canonical state: trace() carries its 60 Hz
-    // tick phase on the machine across calls, the way Clock keeps
-    // cyclePhase/timerPhase across advance() calls on the bench. reset()
-    // restarts the schedule exactly like resetMachine() restarts the clock.
+    // 60 Hz schedule position: CPU cycle edges elapsed since the last timer
+    // tick. step() advances it and tickTimers() parks it at -1 so the
+    // coincident edge's increment lands back on zero, matching the canonical
+    // tick-before-instruction order shared with Clock.advance. It is
+    // canonical state: snapshots serialize it and the hash covers it, so a
+    // restored machine resumes the identical timer phase. reset() restarts
+    // the schedule exactly like resetMachine() restarts the clock.
     this.traceCyclePhase = 0;
 
     for (var i = 0; i < FONTSET.length; i++) {
@@ -140,6 +143,10 @@
   Chip8.prototype.tickTimers = function () {
     if (this.delayTimer > 0) { this.delayTimer -= 1; }
     if (this.soundTimer > 0) { this.soundTimer -= 1; }
+    // Park the cycle phase at -1: the CPU edge coinciding with this timer
+    // edge resolves the tick first, and its step() increment lands the
+    // phase back on 0, exactly like the canonical schedule in Clock.advance.
+    this.traceCyclePhase = -1;
     return this;
   };
 
@@ -232,6 +239,10 @@
   // Returns the raw opcode that was executed (or 0 if the CPU was halted).
   Chip8.prototype.step = function () {
     if (this.halted) { return this.lastOpcode; }
+    // Every non-halted step is one CPU cycle edge on the 60 Hz schedule.
+    // tickTimers() parks the phase at -1 so a coincident edge's increment
+    // lands back on 0; stalled FX0A fetches and faults still consume edges.
+    this.traceCyclePhase += 1;
 
     if (!Number.isInteger(this.pc) || this.pc < 0 || this.pc >= MEMORY_SIZE - 1) { this.fault('Program counter is outside executable memory.', 'PC_RANGE'); return this.lastOpcode; }
     var fetchPc = this.pc;
@@ -658,7 +669,7 @@
       'chipper8-v2',
       s.pc, s.I, s.sp, s.lastOpcode, s.lastFetchPc,
       packBytes(s.V), packWords(s.stack), packBytes(s.keys),
-      s.delayTimer, s.soundTimer,
+      s.delayTimer, s.soundTimer, s.traceCyclePhase,
       s.halted ? 1 : 0, JSON.stringify(s.error), s.drawFlag ? 1 : 0,
       s.instructionsExecuted,
       keyOrMinus(s.waitingForKey), keyOrMinus(s.waitKey), keyOrMinus(s.releasedKey),
@@ -676,6 +687,7 @@
       lastOpcode: this.lastOpcode, lastFetchPc: this.lastFetchPc,
       V: this.V, stack: this.stack, keys: this.keys,
       delayTimer: this.delayTimer, soundTimer: this.soundTimer,
+      traceCyclePhase: this.traceCyclePhase,
       halted: this.halted, error: this.error, drawFlag: this.drawFlag,
       instructionsExecuted: this.instructionsExecuted,
       waitingForKey: this.waitingForKey, waitKey: this.waitKey, releasedKey: this.releasedKey,
@@ -707,6 +719,7 @@
       keys: Array.prototype.slice.call(this.keys),
       delayTimer: this.delayTimer,
       soundTimer: this.soundTimer,
+      traceCyclePhase: this.traceCyclePhase,
       halted: this.halted,
       error: this.error,
       drawFlag: this.drawFlag,
@@ -786,6 +799,9 @@
       stack: new Uint16Array(STACK_SIZE),
       delayTimer: needInt(snap.delayTimer, 0, 0xFF, 'delayTimer'),
       soundTimer: needInt(snap.soundTimer, 0, 0xFF, 'soundTimer'),
+      // -1 is the legitimate parked value a just-fired tick leaves behind;
+      // the next step() edge absorbs it back to 0.
+      traceCyclePhase: needInt(snap.traceCyclePhase, -1, Number.MAX_SAFE_INTEGER, 'traceCyclePhase'),
       halted: needBool(snap.halted, 'halted'),
       drawFlag: needBool(snap.drawFlag, 'drawFlag'),
       instructionsExecuted: needInt(snap.instructionsExecuted, 0, Number.MAX_SAFE_INTEGER, 'instructionsExecuted'),
@@ -876,6 +892,7 @@
     this.lastOpcode = staged.lastOpcode; this.lastFetchPc = staged.lastFetchPc;
     this.V = staged.V; this.stack = staged.stack; this.keys = staged.keys;
     this.delayTimer = staged.delayTimer; this.soundTimer = staged.soundTimer;
+    this.traceCyclePhase = staged.traceCyclePhase;
     this.halted = staged.halted; this.error = staged.error; this.drawFlag = staged.drawFlag;
     this.instructionsExecuted = staged.instructionsExecuted;
     this.waitingForKey = staged.waitingForKey; this.waitKey = staged.waitKey; this.releasedKey = staged.releasedKey;
@@ -912,10 +929,10 @@
   // schedule as Clock.advance in the browser run loop: at a CPU cycle edge
   // that coincides with a timer edge the 60 Hz decrement resolves first,
   // before the instruction executes, and cycles keep elapsing while the CPU
-  // stalls on an FX0A key wait. The tick phase lives on the machine across
-  // calls (traceCyclePhase), mirroring Clock's persistent phases across
-  // advance() calls, so chunked traces continue the same schedule a single
-  // call or the live bench would produce. The exact mode and rate are
+  // stalls on an FX0A key wait. The tick phase lives on the machine as
+  // traceCyclePhase, maintained by step() and tickTimers() themselves, so
+  // chunked traces, raw stepping and the live bench all continue the same
+  // schedule a single call would produce. The exact mode and rate are
   // recorded in the export's timerSchedule field; frozen mode sets
   // cyclesPerTick/cpuHz to null as an explicit CPU-only trace.
   Chip8.prototype.trace = function (steps, options) {
@@ -935,12 +952,15 @@
       throw new RangeError('cyclesPerTick must be an integer from 1 to 1000000.');
     }
     var entries = [];
-    // The tick phase persists on the machine across trace() calls, matching
-    // Clock's persistent phases across advance() calls: chunked traces on a
-    // continuing machine must not restart the 60 Hz schedule. A missing or
-    // out-of-range phase self-heals to zero rather than skipping a tick.
-    var cyclesSinceTick = Number.isInteger(this.traceCyclePhase) &&
-      this.traceCyclePhase >= 0 && this.traceCyclePhase < cyclesPerTick ? this.traceCyclePhase : 0;
+    // The tick phase lives on the machine and is maintained by step() and
+    // tickTimers() themselves, so chunked traces, raw stepping and the live
+    // Clock bench all continue the same 60 Hz schedule. A missing,
+    // malformed or overdue phase self-heals to zero rather than skipping a
+    // tick; -1 is the legitimate parked value a just-fired tick leaves.
+    if (!Number.isInteger(this.traceCyclePhase) || this.traceCyclePhase < -1 ||
+        (timersMode === 'timed' && this.traceCyclePhase >= cyclesPerTick)) {
+      this.traceCyclePhase = 0;
+    }
     for (var i = 0; i < steps && !this.halted; i++) {
       var pcBefore = this.pc;
       var executedBefore = this.instructionsExecuted;
@@ -948,9 +968,9 @@
       // edge and a CPU cycle edge coincide, the timer decrement resolves
       // before the instruction. Stalled FX0A fetches are cycle edges too,
       // so timers keep ticking during a key wait exactly like the live
-      // bench.
-      if (timersMode === 'timed' && ++cyclesSinceTick >= cyclesPerTick) {
-        cyclesSinceTick = 0;
+      // bench. tickTimers() parks the phase at -1 and this edge's step()
+      // increment lands it back on 0.
+      if (timersMode === 'timed' && this.traceCyclePhase + 1 >= cyclesPerTick) {
         this.tickTimers();
       }
       var op = this.step();
@@ -980,7 +1000,6 @@
       if ((op & 0xF000) === 0xB000) { entry.target = this.pc; }
       entries.push(entry);
     }
-    this.traceCyclePhase = cyclesSinceTick;
     return {
       format: 'chipper8-trace',
       version: 2,
