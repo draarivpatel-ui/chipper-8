@@ -335,7 +335,8 @@
 
       case 0xB:
         // BNNN - JP V0, addr (or Vx + addr under the jumpUsesVx quirk).
-        this.pc = (nnn + (this.quirks.jumpUsesVx ? this.V[x] : this.V[0])) & 0xFFFF;
+        // The COSMAC VIP PC is 12 bits, so the target wraps at 0xFFF.
+        this.pc = (nnn + (this.quirks.jumpUsesVx ? this.V[x] : this.V[0])) & 0xFFF;
         break;
 
       case 0xC:
@@ -393,7 +394,7 @@
               for (key = 0; key < NUM_REGISTERS; key++) if (this.keys[key] === 1) { found = key; break; }
             }
             if (found === -1) {
-              this.pc -= 2; this.instructionsExecuted--;
+              this.pc = (this.pc - 2) & 0xFFF; this.instructionsExecuted--;
             } else {
               this.V[x] = found;
               this.waitingForKey = null; this.waitKey = null; this.releasedKey = null;
@@ -406,8 +407,8 @@
           case 0x18: // FX18 - LD ST, Vx
             this.soundTimer = this.V[x];
             break;
-          case 0x1E: // FX1E - ADD I, Vx
-            this.I = (this.I + this.V[x]) & 0xFFFF;
+          case 0x1E: // FX1E - ADD I, Vx. I is 12 bits on the COSMAC VIP.
+            this.I = (this.I + this.V[x]) & 0xFFF;
             break;
           case 0x29: // FX29 - LD F, Vx: address of font sprite for the digit in Vx.
             this.I = (this.V[x] & 0xF) * 5;
@@ -421,13 +422,13 @@
             for (i = 0; i <= x; i++) {
               this.memory[(this.I + i) & 0xFFF] = this.V[i];
             }
-            if (!this.quirks.loadStoreNoIncrementI) { this.I = (this.I + x + 1) & 0xFFFF; }
+            if (!this.quirks.loadStoreNoIncrementI) { this.I = (this.I + x + 1) & 0xFFF; }
             break;
           case 0x65: // FX65 - LD V0..Vx, [I]
             for (i = 0; i <= x; i++) {
               this.V[i] = this.memory[(this.I + i) & 0xFFF];
             }
-            if (!this.quirks.loadStoreNoIncrementI) { this.I = (this.I + x + 1) & 0xFFFF; }
+            if (!this.quirks.loadStoreNoIncrementI) { this.I = (this.I + x + 1) & 0xFFF; }
             break;
           default:
             this.fault('Unknown opcode ' + hex(opcode, 4) + '.');

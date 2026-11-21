@@ -13,7 +13,7 @@ A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMA
   - `SW2 (8XY6/8XYE VY-SRC)`: COSMAC VIP copies `Vy` into `Vx` before shifting; CHIP-48 shifts `Vx` in place.
   - `SW3 (BNNN VX-JUMP)`: COSMAC VIP jumps to `NNN + V0`; CHIP-48 jumps to `XNN + Vx`.
   - `SW4 (CRT BLOOM)` & `SW5 (PIEZO 440 HZ)`: Optional phosphor halation and a 440 Hz square-wave tone generator that stays strictly muted on load (`AudioContext` is instantiated only after user interaction).
-- **Instruction-Level Trace & RAM Inspector**: Every executed instruction is logged to a live trace table showing step count, instruction address (`PC`), 16-bit opcode word, disassembled mnemonic, index register (`I`), and carry/collision flag (`VF`), alongside a live 16-byte RAM hex window highlighting `[PC, PC+1]`.
+- **Instruction-Level Trace & RAM Inspector**: Every executed instruction is logged to a live 16-row trace table showing step count, instruction address (`PC`), 16-bit opcode word, disassembled mnemonic, index register (`I`), and carry/collision flag (`VF`), alongside a live 16-byte RAM hex window centered on the PC and highlighting `[PC, PC+1]`.
 - **Three Bench Display Modes**: Cycle between `P3 AMBER` (1977 warm amber phosphor), `P1 GREEN` (classic green oscilloscope phosphor), and `BENCH PAPER` (Heathkit technical manual daylight theme).
 
 ## Quick Start
@@ -50,7 +50,7 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 node --test tests/
 ```
 
-All 116 tests across `tests/` (engine, assembler, content, regression, and DOM suites) run using Node's built-in test runner with zero external packages.
+All 144 tests across `tests/` (engine, assembler, content, regression, edge case, and DOM suites) run using Node's built-in test runner with zero external packages.
 
 ## License
 

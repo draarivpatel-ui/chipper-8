@@ -920,9 +920,7 @@ html[data-theme="light"] { --text-faint: #655d50; }
 .skip-link { position: absolute; top: -60px; left: 12px; padding: 10px 14px; background: var(--accent); color: var(--accent-ink); z-index: 100; }
 .skip-link:focus { top: 10px; }
 .workbench-intro { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 20px 4px 22px; }
-.eyebrow { margin: 0 0 9px; color: var(--accent); letter-spacing: .16em; font-size: 10px; }
 .workbench-intro h2 { margin: 0; font: 650 clamp(26px, 3.5vw, 42px)/1.1 var(--sans); letter-spacing: -.04em; }
-.workbench-intro p:last-child { font: 13px/1.5 var(--sans); margin: 10px 0 0; color: var(--text-dim); max-width: 630px; }
 .showcase-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .verification-strip { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border: 1px solid var(--rule-strong); padding: 11px 14px; background: var(--panel-deep); margin-bottom: 12px; }
 .verification-strip strong { color: var(--accent); font-size: 11px; }

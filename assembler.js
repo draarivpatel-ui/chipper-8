@@ -45,7 +45,8 @@
     if (/^0x[0-9A-Fa-f]+$/i.test(t)) { return parseInt(t.slice(2), 16); }
     if (/^\$[0-9A-Fa-f]+$/.test(t)) { return parseInt(t.slice(1), 16); }
     if (/^[0-9]+$/.test(t)) { return parseInt(t, 10); }
-    if (Object.prototype.hasOwnProperty.call(labels, t)) { return labels[t]; }
+    var key = t.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(labels, key)) { return labels[key]; }
     throw new AssemblerError('Unknown value or label: ' + token);
   }
 
@@ -198,11 +199,16 @@
     var addr = 0;
     for (var i = 0; i < parsed.length; i++) {
       for (var l = 0; l < parsed[i].labels.length; l++) {
-        var name = parsed[i].labels[l];
+        // Labels are case-insensitive, matching the register/keyword convention.
+        // Keep the source spelling for detailed listings, plus a lowercase key
+        // so references in any case resolve to the same address.
+        var original = parsed[i].labels[l];
+        var name = original.toLowerCase();
         if (Object.prototype.hasOwnProperty.call(labels, name)) {
-          throw new AssemblerError('Line ' + (i + 1) + ': duplicate label ' + name);
+          throw new AssemblerError('Line ' + (i + 1) + ': duplicate label ' + original);
         }
         labels[name] = base + addr;
+        if (original !== name) { labels[original] = base + addr; }
       }
       if (parsed[i].stmt) { addr += sizeOf(parsed[i].stmt); }
     }

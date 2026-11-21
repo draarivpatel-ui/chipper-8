@@ -11,7 +11,7 @@ Chipper-8 runs a complete 35-instruction CHIP-8 virtual machine, a two-pass symb
 - **Four playable original cartridges** assembled from source on boot (`Pong` 186 B, `Catch` 102 B, `Navigator` 106 B, `Blaster` 190 B).
 - **Live Assembly Editor & ROM Exporter**: Write or edit CHIP-8 assembly in the browser, load valid ROMs without wiping state on empty/invalid edits, and download raw `.ch8` binaries.
 - **Historical Quirk Profiles & DIP Switches**: Switch between `Modern`, `VIP` (1977 COSMAC VIP), and `CHIP-48` presets or toggle `I`-increment, shift source (`Vy` vs `Vx`), and offset jump (`V0` vs `Vx`) quirks live.
-- **Instruction-Level Trace, 16-Byte RAM Window & Pixel Inspector**: Watch `PC`, `I`, `SP`, `DT`, `ST`, decoded IR, `V0..VF` changes, the active `[PC, PC+1]` RAM window, and live `[x, y]` framebuffer values and VRAM offsets.
+- **Instruction-Level Trace, 16-Byte RAM Window & Pixel Inspector**: Watch `PC`, `I`, `SP`, `DT`, `ST`, decoded IR, `V0..VF` changes, a 16-row trace, the active PC-centered `[PC, PC+1]` RAM window, and live `[x, y]` framebuffer values and VRAM offsets.
 - **One-Click Diagnostic Showcases**: Demonstrate `DXYN` XOR draw-vs-erase collision (`VF = 0` on draw, `VF = 1` on erase) and live divergence of opcode `8126` across three independent CPU instances (`MODERN`, `VIP`, `CHIP48`).
 
 ## How we built it
@@ -28,7 +28,7 @@ Chipper-8 runs a complete 35-instruction CHIP-8 virtual machine, a two-pass symb
 
 ## Verification
 
-- **116 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, and DOM UI suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
+- **144 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, edge case, and DOM UI suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
 - Exhaustive **65,536-word** (`0x0000..0xFFFF`) disassemble -> assemble round-trip verification passes with zero mismatches.
 - Startup self-test verifies **35 instruction round trips** directly inside the booted workbench.
 - Actual cartridge bytecode sizes verified from `roms.js`: **Pong 186 B**, **Catch 102 B**, **Navigator 106 B**, **Blaster 190 B**.

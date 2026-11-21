@@ -142,3 +142,20 @@ test('physical game keys still work when a ROM or UI button is focused', () => {
   h.event(h.document, 'keyup', { key: '2' });
   assert.equal(key2.getAttribute('aria-pressed'), 'false');
 });
+test('instruction trace keeps sixteen rows and the RAM window follows the PC', () => {
+  const h = app();
+  compile(h, 'LD V0,1\nLD V1,2\nLD V2,3\nLD V3,4\nLD V4,5\nLD V5,6\nLD V6,7\nLD V7,8\nLD V8,9\nLD V9,10\nLD VA,11\nLD VB,12\nLD VC,13\nLD VD,14\nLD VE,15\nLD VF,16\nJP 0x200');
+  for (let i = 0; i < 17; i++) h.node('stepBtn').click();
+  assert.equal(h.node('busTraceBody').children.length, 16);
+  // After stepping back to 0x200 the window starts eight bytes earlier.
+  assert.match(h.node('ramWindow').textContent, /0x1F8:/);
+  assert.match(h.node('ramWindow').textContent, /0x200:/);
+});
+test('hero has no all-caps eyebrow or helper line under the title', () => {
+  const h = app();
+  const intro = h.document.querySelector('.workbench-intro');
+  assert.ok(intro);
+  assert.equal(intro.querySelector('.eyebrow'), null);
+  const heading = intro.querySelectorAll('h2')[0];
+  assert.equal(heading.textContent, 'See every bit of the machine.');
+});

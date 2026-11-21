@@ -112,7 +112,7 @@
   var audioCtx = null, osc = null, gainNode = null;
   var pointerKeys = Object.create(null);
   var traceBuffer = [];
-  var MAX_TRACE = 7;
+  var MAX_TRACE = 16;
   var colors = { bg: '#100b03', pixel: '#ffb000', glow: 'rgba(255,176,0,0.55)' };
 
   function isKeyHeld(value) {
@@ -344,14 +344,17 @@
 
   function renderRamWindow() {
     if (!ramWindow) { return; }
-    var base = cpu.pc & 0xFF0;
-    if (base > 0xFF0) { base = 0xFF0; }
+    // A true 16-byte window that follows the PC: eight bytes before and seven
+    // after, clamped to the 4 KB address space and wrapped at the top.
+    var start = cpu.pc - 8;
+    if (start < 0) { start = 0; }
+    if (start + 16 > 0x1000) { start = 0x1000 - 16; }
     var lines = [];
     for (var r = 0; r < 2; r++) {
-      var rowAddr = base + r * 8;
+      var rowAddr = start + r * 8;
       var parts = [hex3(rowAddr) + ':'];
       for (var c = 0; c < 8; c++) {
-        var addr = (rowAddr + c) & 0xFFF;
+        var addr = rowAddr + c;
         var b = hex2(cpu.memory[addr]);
         if (addr === cpu.pc || addr === ((cpu.pc + 1) & 0xFFF)) {
           parts.push('<span class="pc-byte">' + b + '</span>');
