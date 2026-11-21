@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk DIP panel, and instruction debugger with independent timers.">
+  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk DIP panel, deterministic trace export, state snapshots and instruction debugger with independent timers.">
   <title>CHIPPER-8 // COSMAC VIP Logic Analyzer &amp; Virtual Machine</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -59,7 +59,8 @@
           <div class="key-legend" id="keyLegend"></div>
           <div class="keypad" id="keypad" aria-label="CHIP-8 16-key hexadecimal keypad"></div>
           <p class="io-line" id="romControls"></p>
-          <p class="io-line subtle">Physical mapping: 1234 / QWER / ASDF / ZXCV -&gt; Hex 0..F. Space toggles RUN/HALT.</p>
+          <p class="io-line subtle">Physical mapping: 1234 / QWER / ASDF / ZXCV -&gt; Hex 0..F.</p>
+          <p class="io-line subtle">Bench keys: SPACE run/halt / N step / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
         </section>
       </aside>
 
@@ -98,6 +99,8 @@
             <button id="pauseBtn" class="hw-btn" type="button" disabled>HALT</button>
             <button id="stepBtn" class="hw-btn" type="button" title="Execute single 16-bit instruction">STEP +1 OP</button>
             <button id="resetBtn" class="hw-btn" type="button">RESET 0x200</button>
+            <button id="exportStateBtn" class="hw-btn" type="button" title="Download register, RAM and VRAM snapshot with canonical state hash">STATE JSON [O]</button>
+            <button id="exportTraceBtn" class="hw-btn" type="button" title="Download a deterministic 600-instruction trace with seeded RNG and active quirks">TRACE JSON [U]</button>
           </div>
           <div class="clock-control">
             <label for="speedRange" class="clock-label">CLOCK RATE <span id="speedValue" class="clock-val">600 Hz</span></label>
@@ -208,6 +211,9 @@
           </div>
           <div class="sub-bar">RAM WINDOW AT PC (16 BYTES)</div>
           <pre id="ramWindow" class="ram-window">0x200: -- -- -- -- -- -- -- --</pre>
+          <div class="sub-bar">SAFETY DIAGNOSTICS</div>
+          <output id="diagCount" class="diag-count" aria-live="polite">0 events / 0 codes</output>
+          <ul id="diagList" class="diag-list"></ul>
         </section>
 
         <section class="module-block source-block">
@@ -220,6 +226,7 @@
           <textarea id="assemblyEditor" class="assembly-editor" spellcheck="false" aria-describedby="assemblerStatus"></textarea>
           <div class="editor-actions"><button id="assembleBtn" class="hw-btn hw-btn-primary" type="button">ASSEMBLE + LOAD</button><button id="downloadRomBtn" class="hw-btn" type="button">EXPORT .ch8</button></div>
           <output id="assemblerStatus" class="assembler-status" aria-live="polite">Assembly errors include line numbers.</output>
+          <output id="romDiag" class="assembler-status" aria-live="polite"></output>
         </section>
       </aside>
     </main>
@@ -231,6 +238,7 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="srAnnounce" class="sr-only" role="status" aria-live="polite"></div>
 
   <script src="engine.js"></script>
   <script src="assembler.js"></script>

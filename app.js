@@ -42,6 +42,8 @@
   var pauseBtn = $('pauseBtn');
   var stepBtn = $('stepBtn');
   var resetBtn = $('resetBtn');
+  var exportStateBtn = $('exportStateBtn');
+  var exportTraceBtn = $('exportTraceBtn');
   var speedRange = $('speedRange');
   var speedValue = $('speedValue');
   var audioToggle = $('audioToggle');
@@ -64,6 +66,10 @@
   var sourceTag = $('sourceTag');
   var themeToggle = $('themeToggle');
   var toastEl = $('toast');
+  var diagListEl = $('diagList');
+  var diagCountEl = $('diagCount');
+  var romDiagEl = $('romDiag');
+  var srAnnounceEl = $('srAnnounce');
 
   // Physical keyboard -> CHIP-8 hex key value (COSMAC VIP VP-580 layout):
   //   1 2 3 4      1 2 3 C
@@ -251,9 +257,20 @@
     toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 2200);
   }
 
+  // Screen reader announcements: every machine state change lands in a
+  // dedicated live region, deduplicated so repeated identical statuses do
+  // not spam the speech queue.
+  var lastAnnounced = '';
+  function announce(msg) {
+    if (!srAnnounceEl || msg === lastAnnounced) { return; }
+    lastAnnounced = msg;
+    srAnnounceEl.textContent = msg;
+  }
+
   function setStatus(text, mode) {
     statusText.textContent = text.toUpperCase();
     statusDot.className = 'status-led' + (mode ? ' ' + mode : '');
+    announce(statusText.textContent);
   }
 
   function setButtons() {
@@ -374,6 +391,45 @@
     ramWindow.innerHTML = lines.join('\n');
   }
 
+  // Render the bounded runtime diagnostic log (SYS no-ops, sprite clip/wrap,
+  // index wraps, key masks and CPU faults) plus per-code totals.
+  function renderDiagnostics() {
+    if (!diagListEl || !diagCountEl) { return; }
+    var counts = cpu.diagnosticCounts || {};
+    var total = 0, codes = 0;
+    for (var code in counts) {
+      if (Object.prototype.hasOwnProperty.call(counts, code)) { total += counts[code]; codes++; }
+    }
+    diagCountEl.textContent = total + ' events / ' + codes + ' codes';
+    var list = cpu.diagnostics || [];
+    if (!list.length) {
+      diagListEl.innerHTML = '<li class="diag-empty">No runtime diagnostics.</li>';
+      return;
+    }
+    var html = '';
+    for (var i = Math.max(0, list.length - 4); i < list.length; i++) {
+      var d = list[i];
+      html += '<li class="diag-item sev-' + d.severity + '"><b>' + escapeHtml(d.code) + '</b>' +
+        ' <span class="diag-pc">' + hex3(d.pc) + '</span> ' + escapeHtml(d.message) + '</li>';
+    }
+    diagListEl.innerHTML = html;
+  }
+
+  // Static lint of the active cartridge: malformed bytes, odd length,
+  // control flow into low or unloaded memory, and unassigned words.
+  function lintActiveRom() {
+    if (!romDiagEl || !activeRom) { return; }
+    var lint = C8.Chip8.validateRom(activeRom.bytes);
+    if (!lint.diagnostics.length) {
+      romDiagEl.textContent = 'ROM LINT: clean (0 findings).';
+      return;
+    }
+    var first = lint.diagnostics[0];
+    romDiagEl.textContent = 'ROM LINT: ' + lint.errors + ' errors / ' + lint.warnings +
+      ' warnings / ' + lint.infos + ' notes / first: ' +
+      (first.offset >= 0 ? hex3(first.offset) + ' ' : '') + first.code + ' - ' + first.message;
+  }
+
   function updateInspector() {
     stateCells.pc.textContent = hex3(cpu.pc);
     stateCells.I.textContent = hex3(cpu.I);
@@ -389,6 +445,7 @@
     if (cpu.waitingForKey !== null && running) setStatus('WAITING FOR KEY', 'running');
     renderBusTrace();
     renderRamWindow();
+    renderDiagnostics();
     updateStats();
   }
 
@@ -661,8 +718,10 @@
     activeRomName.textContent = rom.name.toUpperCase() + ' (' + rom.bytes.length + ' B)';
     render();
     updateInspector();
+    lintActiveRom();
     setButtons();
     setStatus('READY', '');
+    announce('Cartridge ' + rom.name + ' loaded, ' + rom.bytes.length + ' bytes.');
     screenOverlay.querySelector('p').textContent = 'READY AT PC=' + hex3(cpu.pc) + ' // PRESS RUN OR STEP';
     screenOverlay.classList.remove('hidden');
 
@@ -684,6 +743,52 @@
     try { localStorage.setItem('chipper8-theme', theme); } catch (e) { /* ignore */ }
     refreshColors();
     render();
+    announce(THEME_LABELS[theme]);
+  }
+
+  function cycleTheme() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'amber';
+    applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+  }
+
+  function cycleRom(dir) {
+    if (!ROMS.length) { return; }
+    var idx = ROMS.indexOf(activeRom);
+    var wasRunning = running;
+    loadRom(((idx < 0 ? 0 : idx) + dir + ROMS.length) % ROMS.length, wasRunning);
+  }
+
+  // ---------------------------------------------------------------- Exports
+  function downloadJson(filename, text) {
+    var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+  }
+
+  // Full register + VRAM snapshot with the canonical FNV-1a state hash.
+  function exportState() {
+    var snap = cpu.snapshotState();
+    downloadJson('chipper8-state.json', JSON.stringify(snap, null, 2));
+    var msg = 'State snapshot exported, hash ' + snap.stateHash + '.';
+    toast(msg);
+    announce(msg);
+  }
+
+  // Deterministic trace: replays the active cartridge on a fresh CPU with a
+  // seeded RNG and the current quirk flags, so the JSON is byte-identical
+  // for the same ROM, seed and DIP configuration.
+  function exportTrace() {
+    if (!activeRom) { toast('No cartridge loaded.'); return; }
+    var report = C8.Chip8.traceProgram(activeRom.bytes, 600, { quirks: cpu.quirks, seed: 0xC8 });
+    downloadJson('chipper8-trace.json', JSON.stringify(report, null, 2));
+    var msg = 'Trace exported: ' + report.instructions + ' instructions, hash ' + report.finalHash + '.';
+    toast(msg);
+    announce(msg);
   }
 
   function initTheme() {
@@ -706,6 +811,13 @@
     return tag === 'BUTTON' || tag === 'A';
   }
 
+  function tickOnce() {
+    pause();
+    cpu.tickTimers();
+    updateInspector();
+    updateSound();
+  }
+
   function onKeyDown(e) {
     if (isTextEditableTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) { return; }
     var key = e.key.toLowerCase();
@@ -718,7 +830,23 @@
     if (Object.prototype.hasOwnProperty.call(KEY_MAP, key)) {
       e.preventDefault();
       if (!e.repeat) { keyboardKeys[KEY_MAP[key]] = true; syncKey(KEY_MAP[key]); }
+      return;
     }
+    // Hold-to-repeat is useful for single stepping and timer ticks.
+    if (key === 'n') { e.preventDefault(); stepOnce(); return; }
+    if (key === 't') { e.preventDefault(); tickOnce(); return; }
+    if (e.repeat) { return; }
+    if (key === 'backspace') { e.preventDefault(); resetMachine(); return; }
+    if (key === 'o') { e.preventDefault(); exportState(); return; }
+    if (key === 'u') { e.preventDefault(); exportTrace(); return; }
+    if (key === 'm') {
+      e.preventDefault();
+      audioToggle.checked = !audioToggle.checked;
+      setAudioEnabled(audioToggle.checked);
+      return;
+    }
+    if (key === 'p') { e.preventDefault(); cycleTheme(); return; }
+    if (key === '[' || key === ']') { e.preventDefault(); cycleRom(key === ']' ? 1 : -1); return; }
   }
 
   function onKeyUp(e) {
@@ -741,6 +869,8 @@
     pauseBtn.addEventListener('click', pause);
     stepBtn.addEventListener('click', stepOnce);
     resetBtn.addEventListener('click', resetMachine);
+    exportStateBtn.addEventListener('click', exportState);
+    exportTraceBtn.addEventListener('click', exportTrace);
 
     speedRange.addEventListener('input', function () {
       speed = Math.max(60, Math.min(2000, Number(speedRange.value) || 600));
@@ -766,11 +896,7 @@
       quirkJumpVx.addEventListener('change', syncQuirksFromUI);
     }
 
-    themeToggle.addEventListener('click', function () {
-      var cur = document.documentElement.getAttribute('data-theme') || 'amber';
-      var nextIdx = (THEMES.indexOf(cur) + 1) % THEMES.length;
-      applyTheme(THEMES[nextIdx]);
-    });
+    themeToggle.addEventListener('click', cycleTheme);
 
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
@@ -840,7 +966,7 @@
       breakpoint = parseInt(value.replace(/^0x/i, ''), 16); skipBreakpoint = false;
       $('breakpointStatus').textContent = 'Break before ' + hex3(breakpoint) + '. Clear the field to remove.';
     });
-    $('timerStepBtn').addEventListener('click', function () { pause(); cpu.tickTimers(); updateInspector(); updateSound(); });
+    $('timerStepBtn').addEventListener('click', tickOnce);
     $('assembleBtn').addEventListener('click', function () {
       try {
         var source = $('assemblyEditor').value, rom = descriptor(source, 'Custom ROM');

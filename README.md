@@ -14,6 +14,9 @@ A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMA
   - `SW3 (BNNN VX-JUMP)`: COSMAC VIP jumps to `NNN + V0`; CHIP-48 jumps to `XNN + Vx`.
   - `SW4 (CRT BLOOM)` & `SW5 (PIEZO 440 HZ)`: Optional phosphor halation and a 440 Hz square-wave tone generator that stays strictly muted on load (`AudioContext` is instantiated only after user interaction).
 - **Instruction-Level Trace & RAM Inspector**: Every executed instruction is logged to a live 16-row trace table showing step count, instruction address (`PC`), 16-bit opcode word, disassembled mnemonic, index register (`I`), and carry/collision flag (`VF`), alongside a live 16-byte RAM hex window centered on the PC and highlighting `[PC, PC+1]`.
+- **Deterministic Trace & State Snapshots**: `Chip8.traceProgram(rom, steps, {seed, profile})` replays any cartridge on a fresh CPU with a seeded mulberry32 RNG and returns a per-instruction JSON report (fetch address, opcode word, disassembly, `I`/`SP`/`VF`/timer post-state, and a per-step core hash that diverges the moment two runs disagree) plus a canonical FNV-1a hash of the final machine. `cpu.snapshotState()` / `exportState()` serialize the register file, stack, timers, quirk flags, packed 4K RAM and bit-packed VRAM to JSON; `cpu.restoreState()` validates every field and the embedded hash before applying it.
+- **Safety Diagnostics & ROM Lint**: Runtime edge cases (SYS no-ops, sprite clipping and wrapping, `I`/RAM wraps past `0xFFF`, key-index masks, stack and opcode faults) are logged with code, severity, cycle and fetch address into a bounded feed under the trace table, while `Chip8.validateRom(bytes)` statically flags malformed bytes, odd lengths, low/unloaded jump targets and unassigned words before a cartridge runs.
+- **Full Keyboard Bench**: Every transport and export control is reachable without a pointer: `SPACE` run/halt, `N` step (hold to repeat), `T` timer tick, `BKSP` reset, `[`/`]` cartridge cycle, `O` state export, `U` trace export, `M` piezo gate and `P` phosphor cycle. Machine state transitions are announced in a deduplicated `aria-live` region.
 - **Three Bench Display Modes**: Cycle between `P3 AMBER` (1977 warm amber phosphor), `P1 GREEN` (classic green oscilloscope phosphor), and `BENCH PAPER` (Heathkit technical manual daylight theme).
 
 ## Quick Start
@@ -50,7 +53,7 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 node --test tests/
 ```
 
-All 144 tests across `tests/` (engine, assembler, content, regression, edge case, and DOM suites) run using Node's built-in test runner with zero external packages.
+All 254 tests across `tests/` (engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary and DOM workbench suites) run using Node's built-in test runner with zero external packages.
 
 ## License
 
