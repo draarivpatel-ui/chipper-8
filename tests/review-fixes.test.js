@@ -166,10 +166,14 @@ test('cyclesPerTick controls the deterministic tick cadence', () => {
   c.delayTimer = 4;
   const r = c.trace(20, { cyclesPerTick: 5 });
   assert.equal(r.timerSchedule.cpuHz, 300);
-  assert.equal(r.entries[9].dt, 3);   // tick after instructions 5 and 10
+  // Canonical ordering shared with Clock.advance: at a cycle edge that
+  // coincides with a 60 Hz timer edge, the tick resolves before the
+  // instruction. Ticks land before instructions 5, 10, 15 and 20.
+  assert.equal(r.entries[4].dt, 3);   // instruction 5 sees the first tick
+  assert.equal(r.entries[9].dt, 2);
   assert.equal(r.entries[10].dt, 2);
-  assert.equal(r.entries[19].dt, 1);
-  assert.equal(c.delayTimer, 0);      // 4 ticks over 20 instructions
+  assert.equal(r.entries[19].dt, 0);
+  assert.equal(c.delayTimer, 0);      // 4 ticks over 20 cycle edges
 });
 
 test('trace validates the timer schedule options', () => {

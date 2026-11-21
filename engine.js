@@ -85,6 +85,11 @@
     this.lastFetchPc = 0;
     this.diagnostics = [];
     this.diagnosticCounts = Object.create(null);
+    // Scheduling metadata, not canonical state: trace() carries its 60 Hz
+    // tick phase on the machine across calls, the way Clock keeps
+    // cyclePhase/timerPhase across advance() calls on the bench. reset()
+    // restarts the schedule exactly like resetMachine() restarts the clock.
+    this.traceCyclePhase = 0;
 
     for (var i = 0; i < FONTSET.length; i++) {
       this.memory[i] = FONTSET[i];
@@ -624,10 +629,30 @@
 
   function keyOrMinus(v) { return v === null || v === undefined ? -1 : v; }
 
+  // Diagnostic history is observable machine state, so it participates in the
+  // canonical serialization: entries pack as fixed-position tuples and the
+  // per-code tally packs as sorted [code, count] pairs, making the encoding
+  // independent of key insertion order.
+  function packDiagnostics(list) {
+    var out = [];
+    list = list || [];
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i] || {};
+      out.push([d.cycle, d.pc, d.code, d.severity, d.message]);
+    }
+    return JSON.stringify(out);
+  }
+  function packDiagnosticCounts(counts) {
+    var out = [], keys = Object.keys(counts || {}).sort();
+    for (var i = 0; i < keys.length; i++) { out.push([keys[i], counts[keys[i]]]); }
+    return JSON.stringify(out);
+  }
+
   // A fixed-order serialization of every observable machine field, including
-  // the deterministic RNG cursor. Two CPUs produce the same string iff their
-  // full execution state is identical. Works on a live machine as well as a
-  // plain staged-state object so restoreState() can hash before committing.
+  // the deterministic RNG cursor and the diagnostic history. Two CPUs produce
+  // the same string iff their full execution state is identical. Works on a
+  // live machine as well as a plain staged-state object so restoreState() can
+  // hash before committing.
   function canonicalFrom(s) {
     return [
       'chipper8-v2',
@@ -638,8 +663,9 @@
       s.instructionsExecuted,
       keyOrMinus(s.waitingForKey), keyOrMinus(s.waitKey), keyOrMinus(s.releasedKey),
       quirkBits(s.quirks),
-      s.rngKind, s.rngState,
-      packBytes(s.memory), packBits(s.display)
+      s.rngKind, s.rngState, s.rngSeed === undefined ? null : s.rngSeed,
+      packBytes(s.memory), packBits(s.display),
+      packDiagnostics(s.diagnostics), packDiagnosticCounts(s.diagnosticCounts)
     ].join('|');
   }
 
@@ -655,7 +681,9 @@
       waitingForKey: this.waitingForKey, waitKey: this.waitKey, releasedKey: this.releasedKey,
       quirks: this.quirks,
       rngKind: rng.kind, rngState: rng.state,
-      memory: this.memory, display: this.display
+      rngSeed: this.rng && Number.isInteger(this.rng.rngSeed) ? this.rng.rngSeed : null,
+      memory: this.memory, display: this.display,
+      diagnostics: this.diagnostics, diagnosticCounts: this.diagnosticCounts
     });
   };
 
@@ -690,8 +718,10 @@
       rngKind: rng.kind,
       rngState: rng.state === -1 ? null : rng.state,
       rngSeed: this.rng && Number.isInteger(this.rng.rngSeed) ? this.rng.rngSeed : null,
-      diagnostics: this.diagnostics.slice(),
-      diagnosticCounts: Object.assign({}, this.diagnosticCounts),
+      diagnostics: this.diagnostics.map(function (d) {
+        return { cycle: d.cycle, pc: d.pc, code: d.code, severity: d.severity, message: d.message };
+      }),
+      diagnosticCounts: Object.assign(Object.create(null), this.diagnosticCounts),
       memory: packBytes(this.memory),
       vram: packBits(this.display)
     };
@@ -739,6 +769,10 @@
       if (value === null) { return null; }
       return needInt(value, 0, NUM_REGISTERS - 1, name);
     }
+    function needStr(value, name) {
+      if (typeof value !== 'string') { throw new RangeError('Snapshot field ' + name + ' must be a string.'); }
+      return value;
+    }
 
     // Stage: decode and range-check every field without touching `this`.
     var staged = {
@@ -760,7 +794,11 @@
       releasedKey: needKey(snap.releasedKey, 'releasedKey'),
       quirks: {},
       memory: unpackHex(snap.memory, MEMORY_SIZE, 'memory'),
-      display: unpackBits(snap.vram, DISPLAY_WIDTH * DISPLAY_HEIGHT)
+      display: unpackBits(snap.vram, DISPLAY_WIDTH * DISPLAY_HEIGHT),
+      diagnostics: [],
+      // A null-prototype map matches the live machine and keeps a literal
+      // '__proto__' count key as data instead of hitting the setter.
+      diagnosticCounts: Object.create(null)
     };
     if (!snap.stack || snap.stack.length !== STACK_SIZE) { throw new RangeError('Snapshot field stack must hold ' + STACK_SIZE + ' values.'); }
     for (var s = 0; s < STACK_SIZE; s++) { staged.stack[s] = needInt(snap.stack[s], 0, 0xFFFF, 'stack'); }
@@ -784,6 +822,48 @@
     } else {
       throw new RangeError('Snapshot rng kind is not supported.');
     }
+    if (!Array.isArray(snap.diagnostics)) {
+      throw new RangeError('Snapshot field diagnostics must be an array.');
+    }
+    if (snap.diagnostics.length > Chip8.MAX_DIAGNOSTICS) {
+      throw new RangeError('Snapshot diagnostics exceed the ' + Chip8.MAX_DIAGNOSTICS + ' entry cap.');
+    }
+    for (var di = 0; di < snap.diagnostics.length; di++) {
+      var diag = snap.diagnostics[di];
+      if (!diag || typeof diag !== 'object' || Array.isArray(diag)) {
+        throw new RangeError('Snapshot diagnostics entry ' + di + ' is malformed.');
+      }
+      staged.diagnostics.push({
+        cycle: needInt(diag.cycle, 0, Number.MAX_SAFE_INTEGER, 'diagnostics.cycle'),
+        pc: needInt(diag.pc, 0, 0xFFFF, 'diagnostics.pc'),
+        code: needStr(diag.code, 'diagnostics.code'),
+        severity: needStr(diag.severity, 'diagnostics.severity'),
+        message: needStr(diag.message, 'diagnostics.message')
+      });
+    }
+    if (!snap.diagnosticCounts || typeof snap.diagnosticCounts !== 'object' || Array.isArray(snap.diagnosticCounts)) {
+      throw new RangeError('Snapshot field diagnosticCounts must be an object.');
+    }
+    Object.keys(snap.diagnosticCounts).forEach(function (diagKey) {
+      staged.diagnosticCounts[diagKey] =
+        needInt(snap.diagnosticCounts[diagKey], 1, Number.MAX_SAFE_INTEGER, 'diagnosticCounts.' + diagKey);
+    });
+    // Consistency: a live machine only ever counts codes it recorded, and
+    // tallies never drop below the surviving entries (counts keep
+    // accumulating after the visible log reaches the cap). A forged report
+    // that disagrees with its own entries cannot mint a live-impossible
+    // state under a valid hash.
+    var entryTallies = Object.create(null);
+    for (var dj = 0; dj < staged.diagnostics.length; dj++) {
+      var tallyCode = staged.diagnostics[dj].code;
+      entryTallies[tallyCode] = (entryTallies[tallyCode] || 0) + 1;
+    }
+    Object.keys(entryTallies).forEach(function (tallyKey) {
+      if (staged.diagnosticCounts[tallyKey] === undefined ||
+          staged.diagnosticCounts[tallyKey] < entryTallies[tallyKey]) {
+        throw new RangeError('Snapshot diagnosticCounts under-counts ' + tallyKey + '.');
+      }
+    });
 
     // Verify integrity: the staged state must hash to the embedded digest
     // before a single live field is overwritten.
@@ -799,11 +879,13 @@
     this.halted = staged.halted; this.error = staged.error; this.drawFlag = staged.drawFlag;
     this.instructionsExecuted = staged.instructionsExecuted;
     this.waitingForKey = staged.waitingForKey; this.waitKey = staged.waitKey; this.releasedKey = staged.releasedKey;
-    for (var k = 0; k < QUIRK_KEYS.length; k++) { this.quirks[QUIRK_KEYS[k]] = staged.quirks[QUIRK_KEYS[k]]; }
+    // Reference swap, not per-key writes: a frozen, nulled or hostile
+    // quirks object on the receiver can no longer strand a half-committed
+    // restore; every earlier field is a plain own-property assignment.
+    this.quirks = staged.quirks;
     this.memory = staged.memory; this.display = staged.display;
-    this.diagnostics = Array.isArray(snap.diagnostics) ? snap.diagnostics.slice() : [];
-    this.diagnosticCounts = (snap.diagnosticCounts && typeof snap.diagnosticCounts === 'object')
-      ? Object.assign({}, snap.diagnosticCounts) : Object.create(null);
+    this.diagnostics = staged.diagnostics;
+    this.diagnosticCounts = staged.diagnosticCounts;
     if (staged.rngKind === 'mulberry32') {
       var rebuilt = Chip8.seededRng(staged.rngSeed === null ? staged.rngState : staged.rngSeed);
       rebuilt.rngState = staged.rngState;
@@ -826,9 +908,15 @@
   //
   // Timers: options.timers is 'timed' (default) or 'frozen'. In timed mode
   // the 60 Hz delay and sound timers tick once per options.cyclesPerTick
-  // executed instructions (default 12, a 720 Hz CPU), giving a deterministic
-  // timer schedule that mirrors the browser run loop. The exact mode and
-  // rate are recorded in the export's timerSchedule field; frozen mode sets
+  // CPU cycle edges (default 12, a 720 Hz CPU), following the same canonical
+  // schedule as Clock.advance in the browser run loop: at a CPU cycle edge
+  // that coincides with a timer edge the 60 Hz decrement resolves first,
+  // before the instruction executes, and cycles keep elapsing while the CPU
+  // stalls on an FX0A key wait. The tick phase lives on the machine across
+  // calls (traceCyclePhase), mirroring Clock's persistent phases across
+  // advance() calls, so chunked traces continue the same schedule a single
+  // call or the live bench would produce. The exact mode and rate are
+  // recorded in the export's timerSchedule field; frozen mode sets
   // cyclesPerTick/cpuHz to null as an explicit CPU-only trace.
   Chip8.prototype.trace = function (steps, options) {
     if (!Number.isInteger(steps) || steps < 0) {
@@ -847,14 +935,33 @@
       throw new RangeError('cyclesPerTick must be an integer from 1 to 1000000.');
     }
     var entries = [];
-    var cyclesSinceTick = 0;
+    // The tick phase persists on the machine across trace() calls, matching
+    // Clock's persistent phases across advance() calls: chunked traces on a
+    // continuing machine must not restart the 60 Hz schedule. A missing or
+    // out-of-range phase self-heals to zero rather than skipping a tick.
+    var cyclesSinceTick = Number.isInteger(this.traceCyclePhase) &&
+      this.traceCyclePhase >= 0 && this.traceCyclePhase < cyclesPerTick ? this.traceCyclePhase : 0;
     for (var i = 0; i < steps && !this.halted; i++) {
       var pcBefore = this.pc;
       var executedBefore = this.instructionsExecuted;
+      // Canonical schedule shared with Clock.advance: when a 60 Hz timer
+      // edge and a CPU cycle edge coincide, the timer decrement resolves
+      // before the instruction. Stalled FX0A fetches are cycle edges too,
+      // so timers keep ticking during a key wait exactly like the live
+      // bench.
+      if (timersMode === 'timed' && ++cyclesSinceTick >= cyclesPerTick) {
+        cyclesSinceTick = 0;
+        this.tickTimers();
+      }
       var op = this.step();
       if (this.instructionsExecuted === executedBefore) {
         if (includeStalls) {
-          entries.push({ stall: true, pc: pcBefore, op: op, mnemonic: this.disassembleEffective(op) });
+          // A fault (for example a PC range error) also consumes the edge
+          // without executing; mark it so it is not mistaken for a key wait.
+          var stallEntry = { stall: true, pc: pcBefore, op: op, mnemonic: this.disassembleEffective(op),
+            dt: this.delayTimer, st: this.soundTimer };
+          if (this.error) { stallEntry.fault = true; }
+          entries.push(stallEntry);
         }
         continue;
       }
@@ -872,11 +979,8 @@
       };
       if ((op & 0xF000) === 0xB000) { entry.target = this.pc; }
       entries.push(entry);
-      if (timersMode === 'timed' && ++cyclesSinceTick >= cyclesPerTick) {
-        cyclesSinceTick = 0;
-        this.tickTimers();
-      }
     }
+    this.traceCyclePhase = cyclesSinceTick;
     return {
       format: 'chipper8-trace',
       version: 2,

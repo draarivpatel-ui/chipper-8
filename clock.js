@@ -1,5 +1,11 @@
 /* A deterministic host clock. CPU instructions and 60 Hz timer edges are
- * interleaved in timestamp order, independently of display refresh rate. */
+ * interleaved in timestamp order, independently of display refresh rate.
+ *
+ * Canonical schedule shared with the exported trace engine
+ * (Chip8.prototype.trace in engine.js): when a 60 Hz timer edge and a CPU
+ * cycle edge coincide, the timer decrement resolves before the instruction
+ * at that edge. CPU cycle edges keep elapsing while the CPU stalls on an
+ * FX0A key wait, so timers keep decrementing during the wait. */
 (function (root, factory) {
   var Clock = factory();
   if (typeof module === 'object' && module.exports) module.exports = Clock;
