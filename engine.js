@@ -219,7 +219,7 @@
     var n = opcode & 0x000F;
     var kk = opcode & 0x00FF;
     var nnn = opcode & 0x0FFF;
-    var i, sum, pixel, spriteByte, bit, px, py, idx, key, found;
+    var i, sum, spriteByte, bit, px, py, idx, key, found;
     var vx = this.V[x], vy = this.V[y];
 
     switch (family) {
