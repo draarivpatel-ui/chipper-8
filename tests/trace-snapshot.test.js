@@ -482,3 +482,59 @@ test('a version 3 snapshot round-trips registers, timers and the cycle phase', (
   assert.equal(d.V[1], 0);
   assert.equal(d.delayTimer, 1);
 });
+
+test('a phased version 2 snapshot restores with exact timer and phase parity', () => {
+  // Byte-identical to what the Round-2 phased-v2 build emitted: a version 2
+  // label, the traceCyclePhase field present, and a digest over the phased
+  // serialization.
+  const c = machine([0x6001, 0xF015, 0x6100, 0xF107]);
+  c.trace(3, { cyclesPerTick: 2 });
+  const s = c.snapshotState();
+  s.version = 2;
+  const d = new Chip8();
+  d.restoreState(s);
+  assert.equal(d.traceCyclePhase, c.traceCyclePhase);
+  assert.equal(d.traceCyclePhase, 1);
+  assert.equal(d.delayTimer, c.delayTimer);
+  assert.equal(d.soundTimer, c.soundTimer);
+  assert.equal(d.stateHash(), s.stateHash);
+  assert.equal(d.stateHash(), c.stateHash());
+  // Resumed schedule: one more traced edge on each machine must keep full
+  // register, timer, phase and hash parity.
+  c.trace(1, { cyclesPerTick: 2 });
+  d.trace(1, { cyclesPerTick: 2 });
+  assert.deepEqual(d.V, c.V);
+  assert.equal(d.delayTimer, c.delayTimer);
+  assert.equal(d.soundTimer, c.soundTimer);
+  assert.equal(d.traceCyclePhase, c.traceCyclePhase);
+  assert.equal(d.stateHash(), c.stateHash());
+});
+
+test('restoreState rejects a version 2 snapshot carrying a forged traceCyclePhase', () => {
+  const receiver = machine([0x60, 0x77]);
+  const before = receiver.exportState();
+  // The phase-less fixture keeps its old digest when the field is appended;
+  // the phased serialization cannot reproduce it, whatever the value.
+  for (const phase of [5, -1, 0]) {
+    const snap = JSON.parse(JSON.stringify(V2_SNAPSHOT));
+    snap.traceCyclePhase = phase;
+    assert.throws(() => receiver.restoreState(snap), /hash mismatch/, 'phase ' + phase);
+    assert.equal(receiver.exportState(), before, 'phase ' + phase);
+  }
+  // Mutating the phase on a genuine phased v2 snapshot under its own digest
+  // fails the same way: the field sits inside the hash.
+  const c = machine([0x6001, 0xF015, 0x6100, 0xF107]);
+  c.trace(3, { cyclesPerTick: 2 });
+  const phased = c.snapshotState();
+  phased.version = 2;
+  phased.traceCyclePhase = 0; // was 1; digest left stale
+  assert.throws(() => receiver.restoreState(phased), /hash mismatch/);
+  assert.equal(receiver.exportState(), before);
+  // Stripping the field while keeping the phased digest fails too: the
+  // phase-less serialization cannot reproduce it either.
+  const stripped = c.snapshotState();
+  stripped.version = 2;
+  delete stripped.traceCyclePhase;
+  assert.throws(() => receiver.restoreState(stripped), /hash mismatch/);
+  assert.equal(receiver.exportState(), before);
+});

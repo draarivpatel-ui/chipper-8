@@ -687,9 +687,10 @@
   }
 
   // Byte-exact copy of the canonical serialization emitted before
-  // traceCyclePhase joined the hash (snapshot format version 2). restoreState
-  // uses it only to verify the embedded digest of snapshots written by older
-  // builds; live hashing always goes through canonicalFrom above.
+  // traceCyclePhase joined the hash (the phase-less flavor of snapshot
+  // format version 2). restoreState uses it only to verify the embedded
+  // digest of version 2 snapshots that carry no traceCyclePhase field; live
+  // hashing always goes through canonicalFrom above.
   function canonicalFromV2(s) {
     return [
       'chipper8-v2',
@@ -771,13 +772,16 @@
   };
 
   // Restore a snapshot produced by snapshotState(). Versions 2 and 3 are
-  // accepted: version 2 predates traceCyclePhase in both the schema and the
-  // canonical hash, so the field is optional there (absent resumes the timer
-  // schedule at phase 0) and its digest verifies against the frozen v2
-  // serialization. Version 3 requires the field like every other canonical
-  // field. Every field, the schema version, the hash algorithm and the
-  // mandatory embedded state hash are validated against a staged copy first;
-  // the live machine is only touched after the entire staged state decodes
+  // accepted. Version 2 exists in two digest flavors: snapshots written
+  // before traceCyclePhase carry no such field and hash the frozen
+  // phase-less serialization (an absent field resumes the timer schedule
+  // at phase 0), while the phased-v2 build emitted version 2 snapshots that
+  // carry the field and hash the live serialization. The field's presence
+  // selects exactly one digest; the other is never tried as a fallback.
+  // Version 3 requires the field like every other canonical field. Every
+  // field, the schema version, the hash algorithm and the mandatory
+  // embedded state hash are validated against a staged copy first; the
+  // live machine is only touched after the entire staged state decodes
   // cleanly and hashes to the exact embedded digest, so a rejected restore
   // leaves the receiver untouched.
   Chip8.prototype.restoreState = function (snap) {
@@ -831,9 +835,10 @@
       delayTimer: needInt(snap.delayTimer, 0, 0xFF, 'delayTimer'),
       soundTimer: needInt(snap.soundTimer, 0, 0xFF, 'soundTimer'),
       // -1 is the legitimate parked value a just-fired tick leaves behind;
-      // the next step() edge absorbs it back to 0. Version 2 snapshots
-      // predating the field resume the schedule at its start (phase 0); a
-      // present value is range-checked like any other field.
+      // the next step() edge absorbs it back to 0. A version 2 snapshot
+      // without the field predates it and resumes the schedule at its
+      // start (phase 0); a present value is range-checked like any other
+      // field and selects the phased digest below.
       traceCyclePhase: snap.version === 2 && snap.traceCyclePhase === undefined ? 0 :
         needInt(snap.traceCyclePhase, -1, Number.MAX_SAFE_INTEGER, 'traceCyclePhase'),
       halted: needBool(snap.halted, 'halted'),
@@ -916,9 +921,17 @@
     });
 
     // Verify integrity: the staged state must hash to the embedded digest
-    // before a single live field is overwritten. Version 2 digests cover the
-    // frozen pre-traceCyclePhase serialization; version 3 covers the live one.
-    if (fnv1a(snap.version === 2 ? canonicalFromV2(staged) : canonicalFrom(staged)) !== snap.stateHash) {
+    // before a single live field is overwritten. Version 2 digests come in
+    // two flavors: without traceCyclePhase the snapshot predates the field
+    // and covers the frozen phase-less serialization; with the field
+    // present (the phased-v2 build, whose hash is byte-identical to
+    // version 3's) it covers the live serialization. Presence picks exactly
+    // one path, so a forged phase cannot verify under a digest that
+    // ignores it. Version 3 always covers the live serialization.
+    var canonical = snap.version === 2 && snap.traceCyclePhase === undefined
+      ? canonicalFromV2(staged)
+      : canonicalFrom(staged);
+    if (fnv1a(canonical) !== snap.stateHash) {
       throw new RangeError('Snapshot state hash mismatch.');
     }
 
