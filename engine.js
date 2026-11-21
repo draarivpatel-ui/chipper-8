@@ -205,6 +205,24 @@
     }
   };
 
+  // Quirk-aware disassembly for live and exported traces. `disassemble()`
+  // stays a neutral round-trip spelling for the assembler; this variant
+  // reports the effective register and resolved target of the active quirk
+  // set. Currently that only affects BNNN: under jumpUsesVx (CHIP-48) the
+  // offset register is Vx, so `JP V2, 0x234 -> 0x23F` shows what the CPU
+  // actually executes instead of the neutral `JP V0, 0x234`.
+  Chip8.prototype.disassembleEffective = function (opcode) {
+    var a = opcode & 0xFFFF;
+    if ((a & 0xF000) === 0xB000) {
+      var x = (a & 0x0F00) >> 8;
+      var nnn = a & 0x0FFF;
+      var regIndex = this.quirks.jumpUsesVx ? x : 0;
+      var target = (nnn + this.V[regIndex]) & 0xFFF;
+      return 'JP V' + regIndex.toString(16).toUpperCase() + ', ' + hex(nnn, 3) + ' -> ' + hex(target, 3);
+    }
+    return this.disassemble(opcode);
+  };
+
   // Fetch, decode and execute a single instruction.
   // Returns the raw opcode that was executed (or 0 if the CPU was halted).
   Chip8.prototype.step = function () {
@@ -501,20 +519,37 @@
   //
   // seededRng: mulberry32, a tiny deterministic PRNG. Feeding the same seed
   // into a fresh machine reproduces an identical CXKK stream, which makes
-  // traces and state hashes reproducible run over run.
+  // traces and state hashes reproducible run over run. The generator keeps
+  // its cursor on the function object itself (`rngState`, `rngKind`,
+  // `rngSeed`) so snapshots can serialize the exact position in the stream
+  // and restoreState() can resume it deterministically.
   Chip8.seededRng = function (seed) {
     if (!Number.isInteger(seed) || seed < 0 || seed > 0xFFFFFFFF) {
       throw new RangeError('Seed must be a 32-bit unsigned integer.');
     }
-    var state = seed >>> 0;
-    return function () {
-      state = (state + 0x6D2B79F5) >>> 0;
-      var t = state;
+    var rng = function () {
+      rng.rngState = (rng.rngState + 0x6D2B79F5) >>> 0;
+      var t = rng.rngState;
       t = Math.imul(t ^ (t >>> 15), t | 1);
       t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    rng.rngKind = 'mulberry32';
+    rng.rngSeed = seed >>> 0;
+    rng.rngState = seed >>> 0;
+    return rng;
   };
+
+  // Describe the live RNG in a serializable form. Custom generators (for
+  // example Math.random or a test stub) carry no serializable cursor and are
+  // marked explicitly so a snapshot never pretends it can resume them.
+  function rngDescriptor(rng) {
+    if (rng && typeof rng.rngKind === 'string' && rng.rngKind !== 'custom-unserializable' &&
+        Number.isInteger(rng.rngState) && rng.rngState >= 0 && rng.rngState <= 0xFFFFFFFF) {
+      return { kind: rng.rngKind, state: rng.rngState >>> 0 };
+    }
+    return { kind: 'custom-unserializable', state: -1 };
+  }
 
   // fnv1a: FNV-1a 32-bit hash over UTF-16 code units. The canonical state
   // string is plain ASCII, so the digest is stable across engines.
@@ -589,34 +624,49 @@
 
   function keyOrMinus(v) { return v === null || v === undefined ? -1 : v; }
 
-  // A fixed-order serialization of every observable machine field. Two CPUs
-  // produce the same string iff their full execution state is identical.
-  Chip8.prototype.canonicalState = function () {
+  // A fixed-order serialization of every observable machine field, including
+  // the deterministic RNG cursor. Two CPUs produce the same string iff their
+  // full execution state is identical. Works on a live machine as well as a
+  // plain staged-state object so restoreState() can hash before committing.
+  function canonicalFrom(s) {
     return [
-      'chipper8-v1',
-      this.pc, this.I, this.sp, this.lastOpcode, this.lastFetchPc,
-      packBytes(this.V), packWords(this.stack), packBytes(this.keys),
-      this.delayTimer, this.soundTimer,
-      this.halted ? 1 : 0, JSON.stringify(this.error), this.drawFlag ? 1 : 0,
-      this.instructionsExecuted,
-      keyOrMinus(this.waitingForKey), keyOrMinus(this.waitKey), keyOrMinus(this.releasedKey),
-      quirkBits(this.quirks),
-      packBytes(this.memory), packBits(this.display)
+      'chipper8-v2',
+      s.pc, s.I, s.sp, s.lastOpcode, s.lastFetchPc,
+      packBytes(s.V), packWords(s.stack), packBytes(s.keys),
+      s.delayTimer, s.soundTimer,
+      s.halted ? 1 : 0, JSON.stringify(s.error), s.drawFlag ? 1 : 0,
+      s.instructionsExecuted,
+      keyOrMinus(s.waitingForKey), keyOrMinus(s.waitKey), keyOrMinus(s.releasedKey),
+      quirkBits(s.quirks),
+      s.rngKind, s.rngState,
+      packBytes(s.memory), packBits(s.display)
     ].join('|');
+  }
+
+  Chip8.prototype.canonicalState = function () {
+    var rng = rngDescriptor(this.rng);
+    return canonicalFrom({
+      pc: this.pc, I: this.I, sp: this.sp,
+      lastOpcode: this.lastOpcode, lastFetchPc: this.lastFetchPc,
+      V: this.V, stack: this.stack, keys: this.keys,
+      delayTimer: this.delayTimer, soundTimer: this.soundTimer,
+      halted: this.halted, error: this.error, drawFlag: this.drawFlag,
+      instructionsExecuted: this.instructionsExecuted,
+      waitingForKey: this.waitingForKey, waitKey: this.waitKey, releasedKey: this.releasedKey,
+      quirks: this.quirks,
+      rngKind: rng.kind, rngState: rng.state,
+      memory: this.memory, display: this.display
+    });
   };
 
   // Canonical state hash: FNV-1a over the serialization above.
   Chip8.prototype.stateHash = function () { return fnv1a(this.canonicalState()); };
 
-  // A cheaper digest of the hot execution state for per-trace-entry records.
-  Chip8.prototype.coreHash = function () {
-    return fnv1a([this.pc, this.I, this.sp, packBytes(this.V), this.delayTimer, this.soundTimer].join('|'));
-  };
-
   Chip8.prototype.snapshotState = function () {
+    var rng = rngDescriptor(this.rng);
     return {
       format: 'chipper8-snapshot',
-      version: 1,
+      version: 2,
       hashAlgorithm: 'fnv1a-32',
       stateHash: this.stateHash(),
       pc: this.pc,
@@ -637,6 +687,9 @@
       waitKey: this.waitKey,
       releasedKey: this.releasedKey,
       quirks: quirkFlags(this.quirks),
+      rngKind: rng.kind,
+      rngState: rng.state === -1 ? null : rng.state,
+      rngSeed: this.rng && Number.isInteger(this.rng.rngSeed) ? this.rng.rngSeed : null,
       diagnostics: this.diagnostics.slice(),
       diagnosticCounts: Object.assign({}, this.diagnosticCounts),
       memory: packBytes(this.memory),
@@ -648,12 +701,21 @@
     return JSON.stringify(this.snapshotState(), null, 2);
   };
 
-  // Restore a snapshot produced by snapshotState(). Validates ranges and the
-  // embedded canonical hash so a tampered or truncated export fails loudly.
+  // Restore a snapshot produced by snapshotState(). Every field, the schema
+  // version, the hash algorithm and the mandatory embedded state hash are
+  // validated against a staged copy first; the live machine is only touched
+  // after the entire staged state decodes cleanly and hashes to the exact
+  // embedded digest, so a rejected restore leaves the receiver untouched.
   Chip8.prototype.restoreState = function (snap) {
     if (!snap || typeof snap !== 'object') { throw new RangeError('Snapshot must be an object.'); }
-    if (snap.format !== 'chipper8-snapshot' || snap.version !== 1) {
+    if (snap.format !== 'chipper8-snapshot' || snap.version !== 2) {
       throw new RangeError('Unsupported snapshot format.');
+    }
+    if (snap.hashAlgorithm !== 'fnv1a-32') {
+      throw new RangeError('Unsupported snapshot hash algorithm.');
+    }
+    if (typeof snap.stateHash !== 'string' || !/^[0-9a-f]{8}$/.test(snap.stateHash)) {
+      throw new RangeError('Snapshot state hash is missing or malformed.');
     }
     function needInt(value, lo, hi, name) {
       if (!Number.isInteger(value) || value < lo || value > hi) {
@@ -673,85 +735,159 @@
       for (var i = 0; i < len; i++) { out[i] = needInt(arr[i], 0, hi, name); }
       return out;
     }
-    this.pc = needInt(snap.pc, 0, 0xFFFF, 'pc');
-    this.I = needInt(snap.i, 0, 0xFFF, 'i');
-    this.sp = needInt(snap.sp, 0, STACK_SIZE, 'sp');
-    this.lastOpcode = needInt(snap.lastOpcode, 0, 0xFFFF, 'lastOpcode');
-    this.lastFetchPc = needInt(snap.lastFetchPc, 0, 0xFFFF, 'lastFetchPc');
-    this.V = needBytes(snap.v, NUM_REGISTERS, 'v', 0xFF);
-    this.keys = needBytes(snap.keys, NUM_REGISTERS, 'keys', 1);
-    if (!snap.stack || snap.stack.length !== STACK_SIZE) { throw new RangeError('Snapshot field stack must hold ' + STACK_SIZE + ' values.'); }
-    this.stack = new Uint16Array(STACK_SIZE);
-    for (var s = 0; s < STACK_SIZE; s++) { this.stack[s] = needInt(snap.stack[s], 0, 0xFFFF, 'stack'); }
-    this.delayTimer = needInt(snap.delayTimer, 0, 0xFF, 'delayTimer');
-    this.soundTimer = needInt(snap.soundTimer, 0, 0xFF, 'soundTimer');
-    this.halted = needBool(snap.halted, 'halted');
-    if (snap.error !== null && typeof snap.error !== 'string') { throw new RangeError('Snapshot field error must be null or a string.'); }
-    this.error = snap.error;
-    this.drawFlag = needBool(snap.drawFlag, 'drawFlag');
-    this.instructionsExecuted = needInt(snap.instructionsExecuted, 0, Number.MAX_SAFE_INTEGER, 'instructionsExecuted');
     function needKey(value, name) {
       if (value === null) { return null; }
       return needInt(value, 0, NUM_REGISTERS - 1, name);
     }
-    this.waitingForKey = needKey(snap.waitingForKey, 'waitingForKey');
-    this.waitKey = needKey(snap.waitKey, 'waitKey');
-    this.releasedKey = needKey(snap.releasedKey, 'releasedKey');
+
+    // Stage: decode and range-check every field without touching `this`.
+    var staged = {
+      pc: needInt(snap.pc, 0, 0xFFFF, 'pc'),
+      I: needInt(snap.i, 0, 0xFFF, 'i'),
+      sp: needInt(snap.sp, 0, STACK_SIZE, 'sp'),
+      lastOpcode: needInt(snap.lastOpcode, 0, 0xFFFF, 'lastOpcode'),
+      lastFetchPc: needInt(snap.lastFetchPc, 0, 0xFFFF, 'lastFetchPc'),
+      V: needBytes(snap.v, NUM_REGISTERS, 'v', 0xFF),
+      keys: needBytes(snap.keys, NUM_REGISTERS, 'keys', 1),
+      stack: new Uint16Array(STACK_SIZE),
+      delayTimer: needInt(snap.delayTimer, 0, 0xFF, 'delayTimer'),
+      soundTimer: needInt(snap.soundTimer, 0, 0xFF, 'soundTimer'),
+      halted: needBool(snap.halted, 'halted'),
+      drawFlag: needBool(snap.drawFlag, 'drawFlag'),
+      instructionsExecuted: needInt(snap.instructionsExecuted, 0, Number.MAX_SAFE_INTEGER, 'instructionsExecuted'),
+      waitingForKey: needKey(snap.waitingForKey, 'waitingForKey'),
+      waitKey: needKey(snap.waitKey, 'waitKey'),
+      releasedKey: needKey(snap.releasedKey, 'releasedKey'),
+      quirks: {},
+      memory: unpackHex(snap.memory, MEMORY_SIZE, 'memory'),
+      display: unpackBits(snap.vram, DISPLAY_WIDTH * DISPLAY_HEIGHT)
+    };
+    if (!snap.stack || snap.stack.length !== STACK_SIZE) { throw new RangeError('Snapshot field stack must hold ' + STACK_SIZE + ' values.'); }
+    for (var s = 0; s < STACK_SIZE; s++) { staged.stack[s] = needInt(snap.stack[s], 0, 0xFFFF, 'stack'); }
+    if (snap.error !== null && typeof snap.error !== 'string') { throw new RangeError('Snapshot field error must be null or a string.'); }
+    staged.error = snap.error;
     if (!snap.quirks || typeof snap.quirks !== 'object') { throw new RangeError('Snapshot quirks are missing.'); }
     for (var q = 0; q < QUIRK_KEYS.length; q++) {
       var key = QUIRK_KEYS[q];
-      this.quirks[key] = needBool(snap.quirks[key], 'quirks.' + key);
+      staged.quirks[key] = needBool(snap.quirks[key], 'quirks.' + key);
     }
-    this.memory = unpackHex(snap.memory, MEMORY_SIZE, 'memory');
-    this.display = unpackBits(snap.vram, DISPLAY_WIDTH * DISPLAY_HEIGHT);
+    if (typeof snap.rngKind !== 'string') { throw new RangeError('Snapshot field rngKind is missing.'); }
+    if (snap.rngKind === 'mulberry32') {
+      staged.rngKind = 'mulberry32';
+      staged.rngState = needInt(snap.rngState, 0, 0xFFFFFFFF, 'rngState') >>> 0;
+      staged.rngSeed = snap.rngSeed === undefined || snap.rngSeed === null
+        ? null : needInt(snap.rngSeed, 0, 0xFFFFFFFF, 'rngSeed') >>> 0;
+    } else if (snap.rngKind === 'custom-unserializable') {
+      staged.rngKind = 'custom-unserializable';
+      staged.rngState = -1;
+      staged.rngSeed = null;
+    } else {
+      throw new RangeError('Snapshot rng kind is not supported.');
+    }
+
+    // Verify integrity: the staged state must hash to the embedded digest
+    // before a single live field is overwritten.
+    if (fnv1a(canonicalFrom(staged)) !== snap.stateHash) {
+      throw new RangeError('Snapshot state hash mismatch.');
+    }
+
+    // Commit: every check passed, so the staged state is applied in full.
+    this.pc = staged.pc; this.I = staged.I; this.sp = staged.sp;
+    this.lastOpcode = staged.lastOpcode; this.lastFetchPc = staged.lastFetchPc;
+    this.V = staged.V; this.stack = staged.stack; this.keys = staged.keys;
+    this.delayTimer = staged.delayTimer; this.soundTimer = staged.soundTimer;
+    this.halted = staged.halted; this.error = staged.error; this.drawFlag = staged.drawFlag;
+    this.instructionsExecuted = staged.instructionsExecuted;
+    this.waitingForKey = staged.waitingForKey; this.waitKey = staged.waitKey; this.releasedKey = staged.releasedKey;
+    for (var k = 0; k < QUIRK_KEYS.length; k++) { this.quirks[QUIRK_KEYS[k]] = staged.quirks[QUIRK_KEYS[k]]; }
+    this.memory = staged.memory; this.display = staged.display;
     this.diagnostics = Array.isArray(snap.diagnostics) ? snap.diagnostics.slice() : [];
     this.diagnosticCounts = (snap.diagnosticCounts && typeof snap.diagnosticCounts === 'object')
       ? Object.assign({}, snap.diagnosticCounts) : Object.create(null);
-    if (typeof snap.stateHash === 'string' && snap.stateHash !== this.stateHash()) {
-      throw new RangeError('Snapshot state hash mismatch.');
+    if (staged.rngKind === 'mulberry32') {
+      var rebuilt = Chip8.seededRng(staged.rngSeed === null ? staged.rngState : staged.rngSeed);
+      rebuilt.rngState = staged.rngState;
+      this.rng = rebuilt;
+    } else if (rngDescriptor(this.rng).kind !== 'custom-unserializable') {
+      // The recorded generator could not be serialized; fall back so the
+      // restored machine still hashes to the snapshot's canonical state.
+      this.rng = Math.random;
     }
     return this;
   };
 
   // Execute up to `steps` instructions on this machine, recording one entry
-  // per executed instruction: fetch address, raw word, disassembly, and the
-  // post-state I/SP/VF/timer fields plus a per-step core hash that diverges
-  // the moment two runs disagree. Blocked FX0A fetches count as step
-  // attempts but record no entry unless options.includeStalls is set.
+  // per executed instruction: fetch address, raw word, quirk-aware
+  // disassembly, the post-state I/SP/VF/timer fields and a per-step hash of
+  // the full observable state (registers, timers, RNG cursor, RAM and VRAM),
+  // so two runs diverge in the hash the moment any machine state does.
+  // Blocked FX0A fetches count as step attempts but record no entry unless
+  // options.includeStalls is set.
+  //
+  // Timers: options.timers is 'timed' (default) or 'frozen'. In timed mode
+  // the 60 Hz delay and sound timers tick once per options.cyclesPerTick
+  // executed instructions (default 12, a 720 Hz CPU), giving a deterministic
+  // timer schedule that mirrors the browser run loop. The exact mode and
+  // rate are recorded in the export's timerSchedule field; frozen mode sets
+  // cyclesPerTick/cpuHz to null as an explicit CPU-only trace.
   Chip8.prototype.trace = function (steps, options) {
     if (!Number.isInteger(steps) || steps < 0) {
       throw new RangeError('Trace steps must be a non-negative integer.');
     }
     var includeStalls = !!(options && options.includeStalls);
+    var timersMode = 'timed';
+    if (options && options.timers !== undefined) {
+      if (options.timers !== 'timed' && options.timers !== 'frozen') {
+        throw new RangeError("Trace timers must be 'timed' or 'frozen'.");
+      }
+      timersMode = options.timers;
+    }
+    var cyclesPerTick = (options && options.cyclesPerTick !== undefined) ? options.cyclesPerTick : 12;
+    if (!Number.isInteger(cyclesPerTick) || cyclesPerTick < 1 || cyclesPerTick > 1000000) {
+      throw new RangeError('cyclesPerTick must be an integer from 1 to 1000000.');
+    }
     var entries = [];
+    var cyclesSinceTick = 0;
     for (var i = 0; i < steps && !this.halted; i++) {
       var pcBefore = this.pc;
       var executedBefore = this.instructionsExecuted;
       var op = this.step();
       if (this.instructionsExecuted === executedBefore) {
         if (includeStalls) {
-          entries.push({ stall: true, pc: pcBefore, op: op, mnemonic: this.disassemble(op) });
+          entries.push({ stall: true, pc: pcBefore, op: op, mnemonic: this.disassembleEffective(op) });
         }
         continue;
       }
-      entries.push({
+      var entry = {
         n: this.instructionsExecuted,
         pc: pcBefore,
         op: op,
-        mnemonic: this.disassemble(op),
+        mnemonic: this.disassembleEffective(op),
         i: this.I,
         sp: this.sp,
         vf: this.V[0xF],
         dt: this.delayTimer,
         st: this.soundTimer,
-        h: this.coreHash()
-      });
+        h: this.stateHash()
+      };
+      if ((op & 0xF000) === 0xB000) { entry.target = this.pc; }
+      entries.push(entry);
+      if (timersMode === 'timed' && ++cyclesSinceTick >= cyclesPerTick) {
+        cyclesSinceTick = 0;
+        this.tickTimers();
+      }
     }
     return {
       format: 'chipper8-trace',
-      version: 1,
+      version: 2,
       hashAlgorithm: 'fnv1a-32',
       quirks: quirkFlags(this.quirks),
+      timerSchedule: {
+        mode: timersMode,
+        timerHz: 60,
+        cyclesPerTick: timersMode === 'timed' ? cyclesPerTick : null,
+        cpuHz: timersMode === 'timed' ? cyclesPerTick * 60 : null
+      },
       instructions: this.instructionsExecuted,
       halted: this.halted,
       error: this.error,
@@ -783,7 +919,9 @@
     result.meta = {
       romBytes: (rom && typeof rom.length === 'number') ? rom.length : 0,
       seed: seed,
-      profile: options.profile || 'custom'
+      profile: options.profile || 'custom',
+      timers: result.timerSchedule.mode,
+      cyclesPerTick: result.timerSchedule.cyclesPerTick
     };
     return result;
   };

@@ -98,7 +98,7 @@ test('snapshotState exposes the canonical fields and formats', () => {
   c.step();
   const s = c.snapshotState();
   assert.equal(s.format, 'chipper8-snapshot');
-  assert.equal(s.version, 1);
+  assert.equal(s.version, 2);
   assert.equal(s.hashAlgorithm, 'fnv1a-32');
   assert.equal(s.stateHash, c.stateHash());
   assert.equal(s.v.length, 16);
@@ -199,23 +199,36 @@ test('restoreState rejects wrong formats and non objects', () => {
 test('restoreState rejects out of range field values', () => {
   const c = machine([0x6001]);
   const s = c.snapshotState();
+  // Each tweak runs on a live machine so the corrupted snapshot still
+  // carries a self-consistent hash: rejection proves the field checks run,
+  // not just the hash gate.
   const tweaks = [
-    (x) => { x.v[0] = 300; },
-    (x) => { x.v = x.v.slice(0, 15); },
     (x) => { x.pc = -4; },
-    (x) => { x.i = 0x1000; },
+    (x) => { x.I = 0x1000; },
     (x) => { x.sp = 17; },
-    (x) => { x.stack[0] = 0x1FFFF; },
+    (x) => { x.stack = new Array(16).fill(0); x.stack[0] = 0x1FFFF; },
+    (x) => { x.stack = new Array(15).fill(0); },
     (x) => { x.keys[4] = 2; },
     (x) => { x.halted = 'yes'; },
-    (x) => { x.quirks.clipSprites = 1; },
-    (x) => { x.waitingForKey = 16; }
+    (x) => { x.drawFlag = 'yes'; },
+    (x) => { x.error = 5; },
+    (x) => { x.delayTimer = 300; },
+    (x) => { x.soundTimer = 700; },
+    (x) => { x.instructionsExecuted = -1; },
+    (x) => { x.waitingForKey = 16; },
+    (x) => { x.V = new Array(15).fill(0); },
+    (x) => { x.V = new Array(16).fill(0); x.V[0] = 300; },
+    (x) => { x.keys = new Array(15).fill(0); }
   ];
   for (const tweak of tweaks) {
-    const copy = JSON.parse(JSON.stringify(s));
-    tweak(copy);
-    delete copy.stateHash; // bypass the hash gate to reach range checks
-    assert.throws(() => new Chip8().restoreState(copy), RangeError);
+    const scratch = new Chip8();
+    scratch.restoreState(s);
+    tweak(scratch);
+    const mutated = scratch.snapshotState();
+    const receiver = machine([0x60, 0x77]);
+    const before = receiver.exportState();
+    assert.throws(() => receiver.restoreState(mutated), RangeError, tweak.toString());
+    assert.equal(receiver.exportState(), before, tweak.toString());
   }
 });
 
@@ -230,7 +243,6 @@ test('restoreState rejects corrupt packed hex fields', () => {
   ]) {
     const copy = JSON.parse(JSON.stringify(s));
     mutate(copy);
-    delete copy.stateHash;
     assert.throws(() => new Chip8().restoreState(copy), RangeError);
   }
 });
@@ -308,12 +320,15 @@ test('traceProgram finalHash equals the live machine hash after the same run', (
   assert.equal(report.finalHash, c.stateHash());
 });
 
-test('per entry core hash diverges the step states diverge', () => {
+test('per entry full-state hash matches identical runs and diverges on divergence', () => {
   const a = machine([0x6001, 0x6101]);
-  const b = machine([0x6001, 0x6102]);
-  const ta = a.trace(2), tb = b.trace(2);
-  assert.equal(ta.entries[0].h, tb.entries[0].h);   // same after first op
-  assert.notEqual(ta.entries[1].h, tb.entries[1].h); // different after second
+  const b = machine([0x6001, 0x6101]);
+  const c = machine([0x6001, 0x6102]);
+  const ta = a.trace(2), tb = b.trace(2), tc = c.trace(2);
+  assert.equal(ta.entries[0].h, tb.entries[0].h);   // identical machines agree
+  assert.equal(ta.entries[1].h, tb.entries[1].h);
+  assert.notEqual(ta.entries[0].h, tc.entries[0].h); // ROM image differs in RAM
+  assert.notEqual(ta.entries[1].h, tc.entries[1].h); // register result diverges too
 });
 
 test('trace result carries quirk flags, counts and diagnostics', () => {

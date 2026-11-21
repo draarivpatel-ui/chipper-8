@@ -60,7 +60,7 @@
           <div class="keypad" id="keypad" aria-label="CHIP-8 16-key hexadecimal keypad"></div>
           <p class="io-line" id="romControls"></p>
           <p class="io-line subtle">Physical mapping: 1234 / QWER / ASDF / ZXCV -&gt; Hex 0..F.</p>
-          <p class="io-line subtle">Bench keys: SPACE run/halt / N step / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
+          <p class="io-line subtle">Bench keys (SW6 switches all off): SPACE run/halt / N step / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
         </section>
       </aside>
 
@@ -153,6 +153,14 @@
               <span class="dip-meta">
                 <b>SW5: PIEZO 440 HZ</b>
                 <small id="mutedBadge">MUTED ON LOAD</small>
+              </span>
+            </label>
+            <label class="dip-switch" title="When ON, single-key bench shortcuts and physical hex-key input are live. When OFF, all character-key shortcuts are disabled; Backspace, buttons and pointer controls keep working.">
+              <input id="shortcutsToggle" type="checkbox" checked>
+              <span class="dip-body"><span class="dip-actuator"></span></span>
+              <span class="dip-meta">
+                <b>SW6: KEY BENCH</b>
+                <small id="shortcutsLabel">KEY BENCH ON</small>
               </span>
             </label>
           </div>

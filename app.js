@@ -49,6 +49,8 @@
   var audioToggle = $('audioToggle');
   var mutedBadge = $('mutedBadge');
   var ghostToggle = $('ghostToggle');
+  var shortcutsToggle = $('shortcutsToggle');
+  var shortcutsLabel = $('shortcutsLabel');
   var quirkLoadStore = $('quirkLoadStore');
   var quirkShiftVy = $('quirkShiftVy');
   var quirkJumpVx = $('quirkJumpVx');
@@ -120,6 +122,7 @@
   var traceBuffer = [];
   var MAX_TRACE = 16;
   var colors = { bg: '#100b03', pixel: '#ffb000', glow: 'rgba(255,176,0,0.55)' };
+  var shortcutsEnabled = true;      // global single-key bench shortcuts (SW6)
 
   function isKeyHeld(value) {
     return !!(keyboardKeys[value] || pointerKeys[value] || virtualKeys[value]);
@@ -334,7 +337,7 @@
       cyc: opCount,
       pc: pcBefore,
       op: op,
-      mnem: cpu.disassemble(op),
+      mnem: cpu.disassembleEffective(op),
       I: cpu.I,
       vf: cpu.V[0xF]
     });
@@ -437,7 +440,7 @@
     stateCells.dt.textContent = String(cpu.delayTimer);
     stateCells.st.textContent = String(cpu.soundTimer);
     stateCells.op.textContent = cpu.lastOpcode
-      ? cpu.disassemble(cpu.lastOpcode) : '-';
+      ? cpu.disassembleEffective(cpu.lastOpcode) : '-';
     for (var i = 0; i < 16; i++) {
       regCells[i].classList.toggle('changed', regCells[i].textContent !== hex2(cpu.V[i]));
       regCells[i].textContent = hex2(cpu.V[i]);
@@ -780,13 +783,18 @@
   }
 
   // Deterministic trace: replays the active cartridge on a fresh CPU with a
-  // seeded RNG and the current quirk flags, so the JSON is byte-identical
-  // for the same ROM, seed and DIP configuration.
+  // seeded RNG, the current quirk flags and a deterministic 60 Hz timer
+  // schedule matching the bench clock, so the JSON is byte-identical for the
+  // same ROM, seed, timer rate and DIP configuration.
   function exportTrace() {
     if (!activeRom) { toast('No cartridge loaded.'); return; }
-    var report = C8.Chip8.traceProgram(activeRom.bytes, 600, { quirks: cpu.quirks, seed: 0xC8 });
+    var cyclesPerTick = Math.max(1, Math.round(speed / 60));
+    var report = C8.Chip8.traceProgram(activeRom.bytes, 600, {
+      quirks: cpu.quirks, seed: 0xC8, timers: 'timed', cyclesPerTick: cyclesPerTick
+    });
     downloadJson('chipper8-trace.json', JSON.stringify(report, null, 2));
-    var msg = 'Trace exported: ' + report.instructions + ' instructions, hash ' + report.finalHash + '.';
+    var msg = 'Trace exported: ' + report.instructions + ' instructions, hash ' + report.finalHash +
+      ' (' + (cyclesPerTick * 60) + ' Hz CPU, 60 Hz timers).';
     toast(msg);
     announce(msg);
   }
@@ -796,6 +804,32 @@
     try { saved = localStorage.getItem('chipper8-theme'); } catch (e) { /* ignore */ }
     if (saved === 'dark') { saved = 'green'; }
     applyTheme(THEMES.indexOf(saved) !== -1 ? saved : 'amber');
+  }
+
+  // WCAG 2.1.4 character-key shortcut switch: SW6 disables every global
+  // printable bench shortcut (letters, brackets and Space) and the physical
+  // hex-key input. The preference persists in localStorage; non-printable
+  // keys (Backspace reset, canvas arrows) and the on-screen keypad buttons
+  // keep working either way.
+  function setShortcutsEnabled(on, silent) {
+    shortcutsEnabled = !!on;
+    if (shortcutsToggle) { shortcutsToggle.checked = shortcutsEnabled; }
+    if (shortcutsLabel) { shortcutsLabel.textContent = shortcutsEnabled ? 'KEY BENCH ON' : 'KEY BENCH OFF'; }
+    try { localStorage.setItem('chipper8-shortcuts', shortcutsEnabled ? 'on' : 'off'); } catch (e) { /* ignore */ }
+    if (!shortcutsEnabled) { releaseAllKeys(); }
+    if (!silent) {
+      var msg = shortcutsEnabled
+        ? 'Bench keyboard shortcuts on.'
+        : 'Bench keyboard shortcuts off. Buttons and pointer controls still work.';
+      toast(msg);
+      announce(msg);
+    }
+  }
+
+  function initShortcuts() {
+    var saved = null;
+    try { saved = localStorage.getItem('chipper8-shortcuts'); } catch (e) { /* ignore */ }
+    setShortcutsEnabled(saved !== 'off', true);
   }
 
   // ---------------------------------------------------------------- Events
@@ -821,6 +855,12 @@
   function onKeyDown(e) {
     if (isTextEditableTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) { return; }
     var key = e.key.toLowerCase();
+    if (!shortcutsEnabled) {
+      // Character-key shortcuts are off (SW6). Backspace is a non-printable
+      // editing key, so the reset binding stays live per WCAG 2.1.4.
+      if (key === 'backspace') { e.preventDefault(); resetMachine(); }
+      return;
+    }
     if (key === ' ' || key === 'spacebar') {
       if (isActivationButton(e.target)) { return; }
       e.preventDefault();
@@ -881,6 +921,12 @@
       glow = ghostToggle.checked;
       render();
     });
+
+    if (shortcutsToggle) {
+      shortcutsToggle.addEventListener('change', function () {
+        setShortcutsEnabled(shortcutsToggle.checked);
+      });
+    }
 
     audioToggle.addEventListener('change', function () {
       setAudioEnabled(audioToggle.checked);
@@ -1001,6 +1047,7 @@
     buildRomList();
     bindEvents();
     initTheme();
+    initShortcuts();
     speedValue.textContent = fmt(speed) + ' Hz';
     audioToggle.checked = false;
     loadRom(0, false);

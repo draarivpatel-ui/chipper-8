@@ -124,7 +124,7 @@ function boot(repo, scripts, options = {}) {
   document.getElementById = id => document.querySelector('#' + id);
   parseHTML(fs.readFileSync(path.join(repo, 'index.html'), 'utf8'), document);
   document.documentElement = document.querySelector('html'); document.body = document.querySelector('body');
-  let now = 0, serial = 0; const rafs = new Map(), timers = new Map(), storage = new Map(), blobs = new Map(), errors = [], observers = [];
+  let now = 0, serial = 0; const rafs = new Map(), timers = new Map(), storage = new Map(Object.entries(options.storage || {})), blobs = new Map(), errors = [], observers = [];
   const sandbox = {
     document, Blob, Uint8Array, Uint16Array, Float64Array, TextEncoder, TextDecoder, URL: {
       createObjectURL: blob => { const id = 'blob:test-' + ++serial; blobs.set(id, blob); return id; }, revokeObjectURL: id => blobs.delete(id)
