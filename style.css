@@ -598,6 +598,13 @@ body {
   gap: 6px;
 }
 
+.dip-profile {
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
 .dip-switch {
   display: flex;
   align-items: center;

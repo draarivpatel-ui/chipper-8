@@ -69,6 +69,9 @@ test('profile changes pause playback and update the physical switches', () => {
   const h = app(); h.node('playBtn').click(); h.node('profileSelect').value = 'vip'; h.event(h.node('profileSelect'), 'change');
   assert.equal(h.node('playBtn').disabled, false); assert.equal(h.node('quirkShiftVy').checked, true); assert.equal(h.node('quirkLoadStore').checked, false);
   assert.match(h.node('quirkComparison').textContent, /key release/);
+  assert.match(h.node('quirkProfileLine').textContent, /sprites clip \/ logic clears VF \/ key release completes FX0A/);
+  h.node('profileSelect').value = 'modern'; h.event(h.node('profileSelect'), 'change');
+  assert.match(h.node('quirkProfileLine').textContent, /sprites wrap \/ logic retains VF \/ held key completes FX0A/);
 });
 test('assembler errors include line numbers and preserve the loaded cartridge', () => {
   const h = app(), name = h.node('activeRomName').textContent; compile(h, 'CLS\nLD VX,1');

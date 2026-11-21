@@ -233,6 +233,13 @@
     if (quirkJumpVxLabel) {
       quirkJumpVxLabel.textContent = jumpVx ? 'CHIP-48: PC = XNN + VX' : 'VIP: PC = NNN + V0';
     }
+    var profileLine = $('quirkProfileLine');
+    if (profileLine) {
+      profileLine.textContent = 'Profile quirks: ' +
+        (cpu.quirks.clipSprites ? 'sprites clip' : 'sprites wrap') + ' / ' +
+        (cpu.quirks.logicResetsVf ? 'logic clears VF' : 'logic retains VF') + ' / ' +
+        (cpu.quirks.waitForRelease ? 'key release completes FX0A' : 'held key completes FX0A');
+    }
   }
 
   // ---------------------------------------------------------------- UI helpers
