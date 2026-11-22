@@ -2,7 +2,7 @@
 
 A zero-dependency CHIP-8 virtual machine, two-pass assembler, and 1977 RCA COSMAC VIP hardware workbench that runs in the browser and in Node.js. It includes four original games written in CHIP-8 assembly, compiled into bytecode at page load, paired with an instruction-level trace, a 16-byte RAM window around the program counter, and hardware DIP switches for historical interpreter quirks.
 
-[Launch the workbench on GitHub Pages](https://draarivpatel-ui.github.io/chipper-8/)
+[Launch the live workbench](https://aariv.me/chipper-8/)
 
 ## Architecture & Hardware Specifications
 
