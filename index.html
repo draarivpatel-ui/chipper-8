@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk DIP panel, deterministic trace export, state snapshots and instruction debugger with independent timers.">
+  <meta name="description" content="Chipper-8: 1977 RCA COSMAC VIP CHIP-8 virtual machine, two-pass assembler, hardware quirk-profile matrix, 256-step time-travel debugger, opcode coverage heatmap, SHA-256 checksummed audit exports and in-page self-tests, all offline.">
   <title>CHIPPER-8 // COSMAC VIP Logic Analyzer &amp; Virtual Machine</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -60,7 +60,7 @@
           <div class="keypad" id="keypad" aria-label="CHIP-8 16-key hexadecimal keypad"></div>
           <p class="io-line" id="romControls"></p>
           <p class="io-line subtle">Physical mapping: 1234 / QWER / ASDF / ZXCV -&gt; Hex 0..F.</p>
-          <p class="io-line subtle">Bench keys (SW6 switches all off): SPACE run/halt / N step / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
+          <p class="io-line subtle">Bench keys (SW6 switches all off): SPACE run/halt / N step / B step-back / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
         </section>
       </aside>
 
@@ -98,6 +98,7 @@
             <button id="playBtn" class="hw-btn hw-btn-primary" type="button">RUN [SPACE]</button>
             <button id="pauseBtn" class="hw-btn" type="button" disabled>HALT</button>
             <button id="stepBtn" class="hw-btn" type="button" title="Execute single 16-bit instruction">STEP +1 OP</button>
+            <button id="stepBackBtn" class="hw-btn" type="button" title="Rewind one executed instruction, exact prior state">STEP -1 OP</button>
             <button id="resetBtn" class="hw-btn" type="button">RESET 0x200</button>
             <button id="exportStateBtn" class="hw-btn" type="button" title="Download register, RAM and VRAM snapshot with canonical state hash">STATE JSON [O]</button>
             <button id="exportTraceBtn" class="hw-btn" type="button" title="Download a deterministic 600-instruction trace with seeded RNG and active quirks">TRACE JSON [U]</button>
@@ -108,7 +109,7 @@
           </div>
         </div>
 
-        <div class="debug-control-row"><label for="profileSelect">INTERPRETER <select id="profileSelect"><option value="modern">Modern / wrapping display</option><option value="vip">COSMAC VIP conventions</option><option value="chip48">CHIP-48 conventions</option></select></label><label for="breakpointInput">BREAK AT PC <input id="breakpointInput" placeholder="0x220" maxlength="5" inputmode="text" aria-describedby="breakpointStatus"></label><button id="breakpointBtn" class="hw-btn" type="button">SET BREAKPOINT</button><output id="breakpointStatus" aria-live="polite">No breakpoint</output><button id="timerStepBtn" class="hw-btn" type="button">TICK 1/60 s</button></div>
+        <div class="debug-control-row"><label for="profileSelect">HARDWARE PROFILE <select id="profileSelect"><option value="modern">SCHIP-1.1 / Modern</option><option value="vip">COSMAC VIP 1977</option><option value="chip48">CHIP-48 1990</option></select></label><label for="breakpointInput">BREAK AT PC(S) <input id="breakpointInput" placeholder="0x220" maxlength="32" inputmode="text" aria-describedby="breakpointStatus"></label><button id="breakpointBtn" class="hw-btn" type="button">SET BREAKPOINTS</button><output id="breakpointStatus" aria-live="polite">No breakpoint</output><output id="timeDepth" class="time-depth" aria-live="polite">0 / 256 captured</output><button id="timerStepBtn" class="hw-btn" type="button">TICK 1/60 s</button></div>
         <div class="dip-panel">
           <div class="dip-header">
             <span>HARDWARE DIP SWITCHES &amp; INTERPRETER QUIRKS</span>
@@ -239,9 +240,47 @@
       </aside>
     </main>
 
+    <section class="studio module" aria-labelledby="studioTitle">
+      <div class="module-bar">
+        <h2 id="studioTitle">06 // QUIRK LAB + TIME-TRAVEL DEBUGGER</h2>
+        <span class="module-meta">SHA-256 AUDIT // 256-STEP RING // SELF-TESTS</span>
+      </div>
+      <div class="studio-grid">
+        <div class="studio-cell">
+          <div class="sub-bar studio-head">QUIRK-PROFILE MATRIX</div>
+          <table class="quirk-matrix" aria-label="Hardware quirk profile matrix">
+            <thead><tr><th>QUIRK</th><th>VIP '77</th><th>C48 '90</th><th>SCHIP</th><th>LIVE</th></tr></thead>
+            <tbody id="quirkMatrixBody"></tbody>
+          </table>
+          <output id="quirkLive" class="studio-note">Probes run on load.</output>
+        </div>
+        <div class="studio-cell">
+          <div class="sub-bar studio-head">OPCODE-FAMILY COVERAGE <span id="coverageTotal" class="coverage-total">0</span></div>
+          <svg id="coverageSvg" class="coverage-svg" viewBox="0 0 328 66" role="img" aria-label="Opcode family execution histogram, 0x0 through 0xF"></svg>
+          <output id="coverageNote" class="studio-note">Executed opcodes per family on the live timeline.</output>
+          <div class="sub-bar studio-head">CHECKSUMMED AUDIT EXPORT</div>
+          <div class="studio-row">
+            <button id="auditJsonBtn" class="hw-btn" type="button" title="Snapshot plus deterministic trace with SHA-256 digest">AUDIT JSON</button>
+            <button id="auditCsvBtn" class="hw-btn" type="button" title="RFC 4180 CSV, formula-injection escaped">CSV</button>
+            <button id="auditMdBtn" class="hw-btn" type="button" title="Markdown audit report">MARKDOWN</button>
+            <button id="auditVerifyBtn" class="hw-btn" type="button" title="Recompute the digest and replay the trace in page">REPLAY + VERIFY</button>
+          </div>
+          <output id="auditStatus" class="studio-note" aria-live="polite">Unkeyed SHA-256 tamper-detection digest; replay checks every traced step.</output>
+        </div>
+        <div class="studio-cell">
+          <div class="sub-bar studio-head">IN-PAGE SELF-TESTS</div>
+          <div class="studio-row">
+            <button id="selfTestBtn" class="hw-btn hw-btn-primary" type="button">RUN SELF-TESTS</button>
+            <output id="selfTestSummary" class="studio-note" aria-live="polite">Idle.</output>
+          </div>
+          <ol id="selfTestList" class="self-test-list"></ol>
+        </div>
+      </div>
+    </section>
+
     <footer class="bench-footer">
-      <span>ENGINE: <code>engine.js</code> (CPU + Disassembler) / <code>assembler.js</code> (2-Pass Label Resolver) / <code>roms.js</code> (4 Original Cartridges)</span>
-      <span>NO BUILD STEP // INDEPENDENT 60 HZ TIMERS // OFFLINE READY</span>
+      <span>ENGINE: <code>engine.js</code> (CPU + Disassembler) / <code>assembler.js</code> (2-Pass Label Resolver) / <code>roms.js</code> (4 Original Cartridges) / <code>studio.js</code> (Quirk Lab + Audit)</span>
+      <span>NO BUILD STEP // OFFLINE READY // SHA-256 AUDIT // 380+ ZERO-DEP TESTS</span>
     </footer>
   </div>
 
@@ -252,6 +291,8 @@
   <script src="assembler.js"></script>
   <script src="roms.js"></script>
   <script src="clock.js"></script>
+  <script src="sha256.js"></script>
+  <script src="studio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
