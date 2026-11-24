@@ -39,7 +39,7 @@ Chipper-8 runs a complete 35-instruction CHIP-8 virtual machine, a two-pass symb
 
 ## Verification
 
-- **400 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression, DOM workbench, studio logic and studio UI suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
+- **414 tests passed, 0 failed, 0 skipped** across engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression, DOM workbench, studio logic and studio UI suites, verified on Node v26.8.1 with `node --test tests/` and zero external packages.
 - **58/58 real-browser checks passed** in headless Chromium (`scripts/audit-headless.mjs`, zero-dep raw CDP over `--remote-debugging-pipe`) at `1440x900`, `390x844` and a `#c8=` deep-link boot: 0 console errors, 0 uncaught page errors, 0 external network requests, 0 horizontal overflow, plus exercised quirk switching, step/step-back, the coverage SVG, the self-test runner, checksummed exports, tamper verification and bookmark application.
 - **16/16 in-page self-tests passed** - FIPS 180-4 SHA-256 known-answer vectors (including the million-`a` vector), 35-opcode and exhaustive 65,536-word round-trip byte identity, 38 verification-ROM golden check cells, quirk-probe divergence, exact step-back state restoration, ring-capacity eviction, CSV formula escaping, audit digest verification, forged-entry tamper detection and bookmark encode/decode.
 - **Determinism proven by test**: identical ROM + seed + quirks produce byte-identical trace JSON and equal canonical state hashes; snapshot -> restore -> snapshot round trips preserve the exact FNV-1a hash.

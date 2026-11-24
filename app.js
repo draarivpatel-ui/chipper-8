@@ -283,7 +283,7 @@
     var html = '';
     for (var i = 0; i < matrix.length; i++) {
       var row = matrix[i];
-      html += '<tr><th>' + row.label + '</th>';
+      html += '<tr><th scope="row">' + row.label + '</th>';
       for (var p = 0; p < order.length; p++) {
         var on = row.profiles[order[p]];
         html += '<td class="' + (on ? 'qk-on' : 'qk-off') + '">' + (on ? 'YES' : 'no') + '</td>';

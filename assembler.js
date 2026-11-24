@@ -172,8 +172,14 @@
       case 'XOR': word(0x8003 | (reg(o0) << 8) | (reg(o1) << 4)); return;
       case 'SUB': word(0x8005 | (reg(o0) << 8) | (reg(o1) << 4)); return;
       case 'SUBN': word(0x8007 | (reg(o0) << 8) | (reg(o1) << 4)); return;
-      case 'SHR': word(0x8006 | (reg(o0) << 8) | ((o1 === undefined ? 0 : reg(o1)) << 4)); return;
-      case 'SHL': word(0x800E | (reg(o0) << 8) | ((o1 === undefined ? 0 : reg(o1)) << 4)); return;
+      case 'SHR':
+        x = reg(o0);
+        word(0x8006 | (x << 8) | ((o1 === undefined ? x : reg(o1)) << 4));
+        return;
+      case 'SHL':
+        x = reg(o0);
+        word(0x800E | (x << 8) | ((o1 === undefined ? x : reg(o1)) << 4));
+        return;
 
       case 'RND': word(0xC000 | (reg(o0) << 8) | bounded(o1, 255)); return;
       case 'DRW':

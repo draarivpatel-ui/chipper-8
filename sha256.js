@@ -80,8 +80,18 @@
 
   function toBytes(input) {
     if (typeof input === 'string') { return utf8Bytes(input); }
-    if (input && typeof input.length === 'number') { return input; }
-    throw new TypeError('SHA-256 input must be a string or a byte array.');
+    if (!input || typeof input.length !== 'number' || !Number.isSafeInteger(input.length) || input.length < 0) {
+      throw new TypeError('SHA-256 input must be a string or a byte array.');
+    }
+    var out = new Uint8Array(input.length);
+    for (var i = 0; i < input.length; i++) {
+      var value = input[i];
+      if (!Number.isInteger(value) || value < 0 || value > 255) {
+        throw new TypeError('SHA-256 byte input must contain only integers from 0 to 255.');
+      }
+      out[i] = value;
+    }
+    return out;
   }
 
   function rotr(x, n) { return ((x >>> n) | (x << (32 - n))) | 0; }
@@ -93,7 +103,7 @@
     var bitLenHi = Math.floor(length / 0x20000000);
     var bitLenLo = (length * 8) >>> 0;
     var padded = new Uint8Array(((length + 9 + 63) >> 6) << 6);
-    padded.set(Array.prototype.slice.call(bytes));
+    padded.set(bytes);
     padded[length] = 0x80;
     var dv = new DataView(padded.buffer);
     dv.setUint32(padded.length - 8, bitLenHi);

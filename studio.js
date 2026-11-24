@@ -578,11 +578,30 @@
     'It proves the export was not edited after it was written; it is not a ' +
     'signature and cannot prove who produced it.';
 
+  function byteArray(input, name) {
+    if (!input || typeof input === 'string' || typeof input.length !== 'number' ||
+        !Number.isSafeInteger(input.length) || input.length < 0) {
+      throw new TypeError(name + ' must be a byte array.');
+    }
+    var out = new Uint8Array(input.length);
+    for (var i = 0; i < input.length; i++) {
+      if (!Number.isInteger(input[i]) || input[i] < 0 || input[i] > 255) {
+        throw new TypeError(name + ' must contain only integers from 0 to 255.');
+      }
+      out[i] = input[i];
+    }
+    return out;
+  }
+
   function traceForAudit(romBytes, quirks, options) {
     options = options || {};
-    var steps = options.steps || 600;
+    var steps = options.steps !== undefined ? options.steps :
+      (options.traceSteps !== undefined ? options.traceSteps : 600);
+    if (!Number.isInteger(steps) || steps < 0) {
+      throw new RangeError('Audit trace steps must be a non-negative integer.');
+    }
     var seed = options.seed === undefined ? 0xC8 : options.seed;
-    var cyclesPerTick = options.cyclesPerTick || 10;
+    var cyclesPerTick = options.cyclesPerTick === undefined ? 10 : options.cyclesPerTick;
     var report = Chip8.traceProgram(romBytes, steps, {
       quirks: quirks, seed: seed, timers: 'timed', cyclesPerTick: cyclesPerTick
     });
@@ -602,7 +621,10 @@
   // options: { romName, coverage, traceSteps, seed, cyclesPerTick }
   function buildAudit(cpu, romBytes, options) {
     options = options || {};
-    var rom = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes || []);
+    if (!cpu || typeof cpu.snapshotState !== 'function' || !cpu.quirks) {
+      throw new TypeError('Audit machine must be a Chip8 instance.');
+    }
+    var rom = byteArray(romBytes, 'Audit ROM');
     var trace = options.trace === undefined
       ? traceForAudit(rom, cpu.quirks, options)
       : options.trace;
@@ -654,7 +676,10 @@
    * prefixed with an apostrophe before quoting. */
   function csvCell(value) {
     var s = value === null || value === undefined ? '' : String(value);
-    if (/^[=+\-@\t\r]/.test(s)) { s = "'" + s; }
+    // Formula interpreters trim leading whitespace before looking for a
+    // formula lead, so whitespace-padded = + - @ tab and CR cells need the
+    // same apostrophe escape as a direct formula lead.
+    if (/^[=+\-@\t\r]/.test(s) || /^\s+[=+\-@\t\r]/.test(s)) { s = "'" + s; }
     if (/[",\n\r]/.test(s)) { s = '"' + s.replace(/"/g, '""') + '"'; }
     return s;
   }
@@ -782,41 +807,58 @@
   // traced instruction's address, opcode and per-step state hash plus
   // the final canonical hash.
   function replayAudit(input) {
-    var report = typeof input === 'string' ? JSON.parse(input) : input;
     var checks = [];
     function check(name, pass, detail) {
       checks.push({ name: name, pass: !!pass, detail: detail || '' });
       return pass;
     }
-    if (!report || report.format !== 'chipper8-audit') {
-      check('audit parses', false);
+    function fail(name, detail) {
+      check(name, false, detail);
       return { ok: false, checks: checks };
     }
-    var romBytes = unhex(report.rom.bytes);
-    var trace = report.trace || {};
-    var entries = trace.entries || [];
-    var replay = Chip8.traceProgram(romBytes, entries.length, {
-      quirks: report.quirks,
-      seed: trace.seed,
-      timers: trace.timerSchedule && trace.timerSchedule.mode === 'frozen' ? 'frozen' : 'timed',
-      cyclesPerTick: trace.timerSchedule && trace.timerSchedule.cyclesPerTick || 10
-    });
-    var mismatch = null;
-    for (var i = 0; i < entries.length && i < replay.entries.length; i++) {
-      var a = entries[i], b = replay.entries[i];
-      if (a.pc !== b.pc || a.op !== b.op || a.h !== b.h) {
-        mismatch = { index: i, expected: { pc: a.pc, op: a.op, h: a.h }, actual: { pc: b.pc, op: b.op, h: b.h } };
-        break;
-      }
+    var report = input;
+    if (typeof input === 'string') {
+      try { report = JSON.parse(input); }
+      catch (e) { return fail('audit parses', e.message); }
     }
-    var ok = true;
-    ok = check('instruction count matches', replay.entries.length === entries.length,
-      replay.entries.length + ' vs ' + entries.length) && ok;
-    ok = check('every entry pc/op/stateHash matches', !mismatch,
-      mismatch ? 'first divergence at entry ' + mismatch.index : '') && ok;
-    ok = check('final canonical hash matches', replay.finalHash === trace.finalHash,
-      replay.finalHash + ' vs ' + trace.finalHash) && ok;
-    return { ok: ok, checks: checks, replayHash: replay.finalHash };
+    if (!report || typeof report !== 'object' || report.format !== 'chipper8-audit') {
+      return fail('audit format is chipper8-audit');
+    }
+    if (!report.rom || typeof report.rom.bytes !== 'string' || !report.trace || !Array.isArray(report.trace.entries)) {
+      return fail('audit carries ROM bytes and a trace entry list');
+    }
+    if (report.trace.entries.length > 100000) {
+      return fail('trace entry count stays within the 100000-step verification budget');
+    }
+    try {
+      var romBytes = unhex(report.rom.bytes);
+      var trace = report.trace || {};
+      var entries = trace.entries || [];
+      var replay = Chip8.traceProgram(romBytes, entries.length, {
+        quirks: report.quirks,
+        seed: trace.seed,
+        timers: trace.timerSchedule && trace.timerSchedule.mode === 'frozen' ? 'frozen' : 'timed',
+        cyclesPerTick: trace.timerSchedule && Number.isInteger(trace.timerSchedule.cyclesPerTick) ? trace.timerSchedule.cyclesPerTick : 10
+      });
+      var mismatch = null;
+      for (var i = 0; i < entries.length && i < replay.entries.length; i++) {
+        var a = entries[i] || {}, b = replay.entries[i];
+        if (a.pc !== b.pc || a.op !== b.op || a.h !== b.h) {
+          mismatch = { index: i, expected: { pc: a.pc, op: a.op, h: a.h }, actual: { pc: b.pc, op: b.op, h: b.h } };
+          break;
+        }
+      }
+      var ok = true;
+      ok = check('instruction count matches', replay.entries.length === entries.length,
+        replay.entries.length + ' vs ' + entries.length) && ok;
+      ok = check('every entry pc/op/stateHash matches', !mismatch,
+        mismatch ? 'first divergence at entry ' + mismatch.index : '') && ok;
+      ok = check('final canonical hash matches', replay.finalHash === trace.finalHash,
+        replay.finalHash + ' vs ' + trace.finalHash) && ok;
+      return { ok: ok, checks: checks, replayHash: replay.finalHash };
+    } catch (e) {
+      return fail('audit replay input is structurally valid', e.message);
+    }
   }
 
   /* ============================ URL-hash bookmark ============================
@@ -827,10 +869,27 @@
    */
   function encodeBookmark(state) {
     if (!state || typeof state !== 'object') { throw new TypeError('Bookmark state required.'); }
-    var dips = Number.isInteger(state.dips) ? state.dips : 0;
-    var parts = ['p=' + String(state.profile || 'modern'), 'd=' + dips];
-    if (Number.isInteger(state.speed)) { parts.push('hz=' + state.speed); }
-    if (Number.isInteger(state.rom)) { parts.push('r=' + state.rom); }
+    var profile = state.profile === undefined ? 'modern' : state.profile;
+    if (!Object.prototype.hasOwnProperty.call(Chip8.PROFILES, profile)) {
+      throw new RangeError('Bookmark profile is not supported.');
+    }
+    var dips = state.dips === undefined ? 0 : state.dips;
+    if (!Number.isInteger(dips) || dips < 0 || dips > 7) {
+      throw new RangeError('Bookmark DIP bits must be an integer from 0 to 7.');
+    }
+    var parts = ['p=' + profile, 'd=' + dips];
+    if (state.speed !== undefined) {
+      if (!Number.isInteger(state.speed) || state.speed < 60 || state.speed > 2000) {
+        throw new RangeError('Bookmark speed must be an integer from 60 to 2000 Hz.');
+      }
+      parts.push('hz=' + state.speed);
+    }
+    if (state.rom !== undefined) {
+      if (!Number.isInteger(state.rom) || state.rom < 0 || state.rom > 255) {
+        throw new RangeError('Bookmark ROM index must be an integer from 0 to 255.');
+      }
+      parts.push('r=' + state.rom);
+    }
     return parts.join(';');
   }
 
@@ -845,7 +904,8 @@
     var pairs = body.split(';');
     for (var i = 0; i < pairs.length; i++) {
       var kv = pairs[i].split('=');
-      if (kv.length !== 2) { return null; }
+      if (kv.length !== 2 || kv[0] === '') { return null; }
+      if (Object.prototype.hasOwnProperty.call(fields, kv[0])) { return null; }
       fields[kv[0]] = kv[1];
     }
     if (!Object.prototype.hasOwnProperty.call(Chip8.PROFILES, fields.p)) { return null; }
@@ -857,6 +917,7 @@
     if (fields.hz !== undefined) {
       if (!/^\d+$/.test(fields.hz)) { return null; }
       out.speed = parseInt(fields.hz, 10);
+      if (out.speed < 60 || out.speed > 2000) { return null; }
     }
     if (fields.r !== undefined) {
       if (!/^\d+$/.test(fields.r)) { return null; }

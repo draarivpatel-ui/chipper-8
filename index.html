@@ -57,7 +57,7 @@
             <span class="module-meta">EX9E / EXA1 / FX0A</span>
           </div>
           <div class="key-legend" id="keyLegend"></div>
-          <div class="keypad" id="keypad" aria-label="CHIP-8 16-key hexadecimal keypad"></div>
+          <div class="keypad" id="keypad" role="group" aria-label="CHIP-8 16-key hexadecimal keypad"></div>
           <p class="io-line" id="romControls"></p>
           <p class="io-line subtle">Physical mapping: 1234 / QWER / ASDF / ZXCV -&gt; Hex 0..F.</p>
           <p class="io-line subtle">Bench keys (SW6 switches all off): SPACE run/halt / N step / B step-back / T tick / BKSP reset / [ ] cartridge / O state JSON / U trace JSON / M piezo / P phosphor.</p>
@@ -205,12 +205,12 @@
             <table class="trace-table" aria-label="Executed instruction trace">
               <thead>
                 <tr>
-                  <th>STEP</th>
-                  <th>PC</th>
-                  <th>WORD</th>
-                  <th>MNEMONIC</th>
-                  <th>I-REG</th>
-                  <th>VF</th>
+                  <th scope="col">STEP</th>
+                  <th scope="col">PC</th>
+                  <th scope="col">WORD</th>
+                  <th scope="col">MNEMONIC</th>
+                  <th scope="col">I-REG</th>
+                  <th scope="col">VF</th>
                 </tr>
               </thead>
               <tbody id="busTraceBody">
@@ -249,7 +249,7 @@
         <div class="studio-cell">
           <div class="sub-bar studio-head">QUIRK-PROFILE MATRIX</div>
           <table class="quirk-matrix" aria-label="Hardware quirk profile matrix">
-            <thead><tr><th>QUIRK</th><th>VIP '77</th><th>C48 '90</th><th>SCHIP</th><th>LIVE</th></tr></thead>
+            <thead><tr><th scope="col">QUIRK</th><th scope="col">VIP '77</th><th scope="col">C48 '90</th><th scope="col">SCHIP</th><th scope="col">LIVE</th></tr></thead>
             <tbody id="quirkMatrixBody"></tbody>
           </table>
           <output id="quirkLive" class="studio-note">Probes run on load.</output>

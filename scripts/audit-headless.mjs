@@ -57,7 +57,7 @@ function cdpSession(width, height) {
     '--user-data-dir=' + profile,
     `--window-size=${width},${height}`,
     'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
 
   const out = chrome.stdio[3];   // us -> browser
   const inp = chrome.stdio[4];   // browser -> us

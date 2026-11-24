@@ -109,7 +109,7 @@
     var bytes = rom;
     if (typeof rom === 'string') {
       bytes = [];
-      for (var s = 0; s < rom.length; s++) { bytes.push(rom.charCodeAt(s) & 0xFF); }
+      for (var s = 0; s < rom.length; s++) { bytes.push(rom.charCodeAt(s)); }
     }
     if (!bytes || !Number.isInteger(bytes.length) || bytes.length < 1 || bytes.length > MEMORY_SIZE - PROGRAM_START) {
       throw new RangeError('ROM must contain 1 to 3584 bytes.');
@@ -888,13 +888,23 @@
       if (!diag || typeof diag !== 'object' || Array.isArray(diag)) {
         throw new RangeError('Snapshot diagnostics entry ' + di + ' is malformed.');
       }
+      var severity = needStr(diag.severity, 'diagnostics.severity');
+      if (severity !== 'info' && severity !== 'warning' && severity !== 'error') {
+        throw new RangeError('Snapshot diagnostics entry ' + di + ' has a severity the live machine cannot produce.');
+      }
       staged.diagnostics.push({
         cycle: needInt(diag.cycle, 0, Number.MAX_SAFE_INTEGER, 'diagnostics.cycle'),
         pc: needInt(diag.pc, 0, 0xFFFF, 'diagnostics.pc'),
         code: needStr(diag.code, 'diagnostics.code'),
-        severity: needStr(diag.severity, 'diagnostics.severity'),
+        severity: severity,
         message: needStr(diag.message, 'diagnostics.message')
       });
+    }
+    if ((staged.waitKey !== null || staged.releasedKey !== null) && staged.waitingForKey === null) {
+      throw new RangeError('Snapshot key wait state is inconsistent.');
+    }
+    if (staged.releasedKey !== null && staged.releasedKey !== staged.waitKey) {
+      throw new RangeError('Snapshot key wait state is inconsistent.');
     }
     if (!snap.diagnosticCounts || typeof snap.diagnosticCounts !== 'object' || Array.isArray(snap.diagnosticCounts)) {
       throw new RangeError('Snapshot field diagnosticCounts must be an object.');
@@ -1135,7 +1145,7 @@
     var bytes = rom;
     if (typeof rom === 'string') {
       bytes = [];
-      for (var s = 0; s < rom.length; s++) { bytes.push(rom.charCodeAt(s) & 0xFF); }
+      for (var s = 0; s < rom.length; s++) { bytes.push(rom.charCodeAt(s)); }
     }
     var usable = false;
     if (!bytes || !Number.isInteger(bytes.length)) {
