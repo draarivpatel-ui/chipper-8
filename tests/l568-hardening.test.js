@@ -143,6 +143,33 @@ test('light theme accent text meets WCAG AA contrast on workbench panels', () =>
   assert.ok(ratio(vars['--accent'], vars['--panel']) >= 4.5, ratio(vars['--accent'], vars['--panel']).toFixed(2));
 });
 
+
+test('faint text tokens meet WCAG AA contrast on every themed panel', () => {
+  const css = fs.readFileSync(path.join(repo, 'style.css'), 'utf8');
+  function lum(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    const c = [16, 8, 0].map(shift => {
+      const x = ((n >> shift) & 255) / 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function ratio(a, b) {
+    const x = lum(a), y = lum(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+  for (const theme of ['amber', 'green', 'light']) {
+    const match = css.match(new RegExp('html\\[data-theme="' + theme + '"\\]\\s*\\{([^}]*)\\}'));
+    assert.ok(match, theme + ' theme exists');
+    const vars = {};
+    for (const v of match[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) vars[v[1]] = v[2].trim();
+    for (const surface of ['--panel', '--panel-alt', '--panel-deep']) {
+      const actual = ratio(vars['--text-faint'], vars[surface]);
+      assert.ok(actual >= 4.5, theme + ' ' + surface + ' contrast ' + actual.toFixed(2));
+    }
+  }
+});
+
 test('browser audit transport does not leave stderr as an undrained pipe', () => {
   const script = fs.readFileSync(path.join(repo, 'scripts/audit-headless.mjs'), 'utf8');
   assert.match(script, /stdio:\s*\[\s*'ignore',\s*'ignore',\s*'ignore',\s*'pipe',\s*'pipe'\s*\]/);
