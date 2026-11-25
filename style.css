@@ -529,7 +529,8 @@ body {
 
 .clock-control {
   flex: 1 1 180px;
-  max-width: 260px;
+  min-width: 0;
+  max-width: 262px;
 }
 
 .clock-label {
@@ -546,7 +547,9 @@ body {
 }
 
 .hw-range {
-  width: 100%;
+  display: block;
+  max-width: 100%;
+  width: calc(100% - 2px);
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
@@ -950,7 +953,6 @@ summary { cursor: pointer; color: var(--text-dim); min-height: 32px; }
 .hw-range:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .trace-table-wrap { overflow-x: auto; }
 @media (max-width: 760px) { .workbench-intro { flex-direction: column; align-items: flex-start; gap: 14px; } .col-center { grid-row: 1; } .header-controls { flex-wrap: wrap; } .counter-k { font-size: 9px; } .screen-overlay { left: 4px; bottom: 4px; } .screen-overlay p { font-size: 8px; } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 @media (forced-colors: active) { .key.down { outline: 3px solid Highlight; } .crt-frame::after { display: none; } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
@@ -1003,3 +1005,5 @@ summary { cursor: pointer; color: var(--text-dim); min-height: 32px; }
 .diag-item .diag-pc { color: var(--text-faint); }
 .diag-item.sev-warning b { color: var(--amber); }
 .diag-item.sev-error b { color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }

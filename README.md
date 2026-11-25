@@ -59,7 +59,7 @@ The original RCA COSMAC VIP used a 16-key hexadecimal keypad (`0..F`). On a stan
 node --test tests/
 ```
 
-All 414 tests across `tests/` (engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression, DOM workbench, studio logic and studio UI suites) run using Node's built-in test runner with zero external packages.
+All 415 tests across `tests/` (engine, assembler, content, regression, edge case, trace/snapshot, diagnostics, opcode boundary, review regression, DOM workbench, studio logic and studio UI suites) run using Node's built-in test runner with zero external packages.
 
 ## Running the Headless Browser Audit
 
