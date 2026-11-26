@@ -457,7 +457,7 @@ test('csvCell quotes commas, quotes and newlines per RFC 4180', () => {
 test('csvCell prefixes formula-injection leads with an apostrophe', () => {
   assert.equal(Studio.csvCell('=1+1'), "'=1+1");
   assert.equal(Studio.csvCell('+10'), "'+10");
-  assert.equal(Studio.csvCell('-2'), "'-2");
+  assert.equal(Studio.csvCell('-2'), '-2');
   assert.equal(Studio.csvCell('@cmd'), "'@cmd");
   assert.equal(Studio.csvCell('\t9'), "'\t9");
 });

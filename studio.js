@@ -664,7 +664,10 @@
 
   // Digest over every field except the digest block itself.
   function auditPayloadDigest(report) {
-    var copy = Object.assign({}, report);
+    var copy = Object.create(null);
+    Object.keys(report).forEach(function (k) {
+      Object.defineProperty(copy, k, { value: report[k], enumerable: true, writable: true, configurable: true });
+    });
     delete copy.digest;
     return sha256(canonicalize(copy));
   }
@@ -676,10 +679,13 @@
    * prefixed with an apostrophe before quoting. */
   function csvCell(value) {
     var s = value === null || value === undefined ? '' : String(value);
-    // Formula interpreters trim leading whitespace before looking for a
-    // formula lead, so whitespace-padded = + - @ tab and CR cells need the
+    // Formula interpreters trim leading whitespace and invisible format
+    // characters before looking for a formula lead, so padded cells need the
     // same apostrophe escape as a direct formula lead.
-    if (/^[=+\-@\t\r]/.test(s) || /^\s+[=+\-@\t\r]/.test(s)) { s = "'" + s; }
+    var lead = (/^[\s\p{Cf}\p{Cc}]*/u.exec(s) || [''])[0];
+    var first = s.charAt(lead.length);
+    var plainNumber = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(s.slice(lead.length));
+    if (lead.length > 0 || (first !== '' && '=+-@'.indexOf(first) !== -1 && !(first === '-' && plainNumber))) { s = "'" + s; }
     if (/[",\n\r]/.test(s)) { s = '"' + s.replace(/"/g, '""') + '"'; }
     return s;
   }
@@ -1178,7 +1184,7 @@
             [csvCell('JP V0, 0x234'), '"JP V0, 0x234"'],
             [csvCell('say "hi"'), '"say ""hi"""'],
             [csvCell('=1+1'), "'=1+1"],
-            [csvCell('-99'), "'-99"],
+            [csvCell('-99'), '-99'],
             [csvCell('@cmd'), "'@cmd"],
             [csvCell('a\nb'), '"a\nb"'],
             [csvCell(42), '42']
