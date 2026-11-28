@@ -1,0 +1,50 @@
+name: Attest Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attest, for example v1.0.0
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  attest:
+    name: attest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download release assets as published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --dir dist --pattern '*'
+          rm -f dist/*.intoto.jsonl
+          shopt -s nullglob
+          files=(dist/*)
+          test "${#files[@]}" -gt 0
+          printf '%s\n' "${files[@]}"
+      - name: Attest published release assets
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Attach provenance bundle to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" "dist/attestations-$TAG.intoto.jsonl"
+          gh release upload "$TAG" "dist/attestations-$TAG.intoto.jsonl"
